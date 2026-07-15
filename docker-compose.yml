@@ -1,0 +1,34 @@
+version: '3.8'
+
+# For local development only. In production, point MONGODB_URI at MongoDB Atlas
+# instead of running Mongo yourself - see README for the free-tier setup.
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - '4000:4000'
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      MONGODB_URI: mongodb://mongo:27017/kids_play_area
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      CORS_ORIGINS: http://localhost:3000
+      BUSINESS_TIMEZONE: Asia/Colombo
+      LOG_LEVEL: info
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:

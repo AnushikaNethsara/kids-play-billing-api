@@ -6,6 +6,7 @@ import { asyncHandler } from '../../common/utils/asyncHandler';
 import { UserRole } from '../../common/constants/roles';
 import {
   createBillSchema,
+  createBillFromSessionsSchema,
   updateBillSchema,
   completeBillSchema,
   cancelBillSchema,
@@ -83,6 +84,62 @@ router.use(authenticate);
  */
 router.post('/', validate({ body: createBillSchema }), asyncHandler(billController.create));
 router.get('/', validate({ query: listBillsQuerySchema }), asyncHandler(billController.list));
+
+/**
+ * @openapi
+ * /bills/from-sessions:
+ *   post:
+ *     summary: Check out scanned tickets into a draft bill priced on time spent
+ *     description: >
+ *       The checkout half of QR ticketing. Each ticket is claimed atomically from ACTIVE,
+ *       priced pro-rata from the package rate snapshotted at check-in
+ *       (`unitPrice x billedMinutes / durationMinutes`, floored at
+ *       `minimumBillableMinutes`), and attached to a new DRAFT bill. Take payment with
+ *       `POST /bills/{id}/complete` exactly as for any other bill.
+ *
+ *       Tickets are identified by their printed code rather than by id so a cashier app
+ *       that has been offline since check-in can compose this request without a round
+ *       trip. Claiming is a compare-and-set, so a ticket can never be billed twice.
+ *     tags: [Bills]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [ticketCodes]
+ *             properties:
+ *               ticketCodes:
+ *                 type: array
+ *                 items: { type: string }
+ *               checkOutAt:
+ *                 type: string
+ *                 format: date-time
+ *                 description: Device clock time; defaults to server time when omitted
+ *               discount:
+ *                 type: object
+ *                 properties:
+ *                   type: { type: string, enum: [NONE, FIXED, PERCENTAGE] }
+ *                   value: { type: number }
+ *               customer:
+ *                 type: object
+ *                 properties:
+ *                   customerId: { type: string }
+ *                   parentName: { type: string }
+ *                   phoneNumber: { type: string }
+ *               paymentMethod: { type: string, enum: [CASH, CARD, BANK_TRANSFER, OTHER] }
+ *               notes: { type: string }
+ *     responses:
+ *       201: { description: Draft bill created from tickets }
+ *       404: { description: One of the ticket codes is unknown }
+ *       409: { description: A ticket was already checked out or was voided }
+ */
+router.post(
+  '/from-sessions',
+  validate({ body: createBillFromSessionsSchema }),
+  asyncHandler(billController.createFromSessions),
+);
 
 /**
  * @openapi

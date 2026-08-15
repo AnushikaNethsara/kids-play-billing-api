@@ -12,6 +12,7 @@ export const AuditAction = {
   BILL_CANCELLED: 'BILL_CANCELLED',
   BILL_REFUNDED: 'BILL_REFUNDED',
   BILL_DISCOUNT_ABOVE_THRESHOLD: 'BILL_DISCOUNT_ABOVE_THRESHOLD',
+  SESSION_VOIDED: 'SESSION_VOIDED',
   SETTINGS_UPDATED: 'SETTINGS_UPDATED',
 } as const;
 
@@ -23,6 +24,7 @@ export const AuditEntityType = {
   BILL: 'BILL',
   SETTINGS: 'SETTINGS',
   CUSTOMER: 'CUSTOMER',
+  PLAY_SESSION: 'PLAY_SESSION',
 } as const;
 
 export type AuditEntityType = (typeof AuditEntityType)[keyof typeof AuditEntityType];

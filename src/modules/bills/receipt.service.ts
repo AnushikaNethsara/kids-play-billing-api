@@ -1,9 +1,16 @@
 import { DateTime } from 'luxon';
 import type { BillHydrated } from './bill.model';
 import type { BusinessSettingsHydrated } from '../settings/settings.model';
-import type { ReceiptData } from './receipt.types';
+import type { ReceiptData, ReceiptItem } from './receipt.types';
 import { formatMoney } from '../../common/utils/money';
-import { centerText, dashLine, getPaperWidthChars, twoColumnLine, wrapText } from './receiptText';
+import {
+  centerText,
+  dashLine,
+  formatDuration,
+  getPaperWidthChars,
+  twoColumnLine,
+  wrapText,
+} from './receiptText';
 
 export const receiptService = {
   buildReceiptData(bill: BillHydrated, settings: BusinessSettingsHydrated): ReceiptData {
@@ -21,14 +28,35 @@ export const receiptService = {
         time: paidMoment ? paidMoment.toFormat('HH:mm') : '',
         cashierName: bill.cashierName,
         parentName: bill.parentName,
-        items: bill.items.map((item) => ({
-          childName: item.childName,
-          packageName: item.packageName,
-          durationMinutes: item.durationMinutes,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          lineTotal: item.lineTotal,
-        })),
+        items: bill.items.map((item) => {
+          const receiptItem: ReceiptItem = {
+            childName: item.childName,
+            packageName: item.packageName,
+            durationMinutes: item.durationMinutes,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            lineTotal: item.lineTotal,
+          };
+
+          // Only session-billed items carry times; legacy flat-price items have none and
+          // fall through to the original layout untouched.
+          if (item.billedMinutes !== null && item.billedMinutes !== undefined) {
+            receiptItem.billedMinutes = item.billedMinutes;
+            receiptItem.billedDuration = formatDuration(item.billedMinutes);
+          }
+          if (item.checkInAt) {
+            receiptItem.checkInTime = DateTime.fromJSDate(item.checkInAt)
+              .setZone(settings.timezone)
+              .toFormat('hh:mm a');
+          }
+          if (item.checkOutAt) {
+            receiptItem.checkOutTime = DateTime.fromJSDate(item.checkOutAt)
+              .setZone(settings.timezone)
+              .toFormat('hh:mm a');
+          }
+
+          return receiptItem;
+        }),
         subtotal: bill.subtotal,
         discount: bill.discount,
         tax: bill.tax,
@@ -67,7 +95,23 @@ export const receiptService = {
 
     for (const item of data.bill.items) {
       lines.push(...wrapText(`Child: ${item.childName}`, width));
-      const label = `${item.packageName} x ${item.quantity}`;
+
+      // Time-billed item: show the parent what they are actually paying for - when the
+      // child went in, when they came out, and the rate that was applied.
+      if (item.checkInTime && item.checkOutTime) {
+        lines.push(...wrapText(`In ${item.checkInTime}  Out ${item.checkOutTime}`, width));
+      }
+      if (item.billedDuration) {
+        lines.push(
+          twoColumnLine(
+            `Time: ${item.billedDuration}`,
+            `@${formatMoney(item.unitPrice)}/${item.durationMinutes}m`,
+            width,
+          ),
+        );
+      }
+
+      const label = item.billedMinutes ? item.packageName : `${item.packageName} x ${item.quantity}`;
       lines.push(twoColumnLine(label, formatMoney(item.lineTotal), width));
     }
     lines.push(dashLine(width));

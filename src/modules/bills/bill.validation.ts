@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { ticketCodeSchema } from '../play-sessions/playSession.validation';
 
 const objectIdSchema = z.string().length(24, 'Invalid id');
 
@@ -25,6 +26,24 @@ export const createBillSchema = z.object({
     .optional(),
   items: z.array(createBillItemSchema).min(1, 'At least one bill item is required'),
   discount: createBillDiscountSchema.optional(),
+  paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+  notes: z.string().trim().max(500).optional(),
+});
+
+export const createBillFromSessionsSchema = z.object({
+  ticketCodes: z
+    .array(ticketCodeSchema)
+    .min(1, 'At least one ticket is required to check out')
+    .max(20, 'Too many tickets in a single checkout'),
+  checkOutAt: z.string().datetime({ offset: true }).optional(),
+  discount: createBillDiscountSchema.optional(),
+  customer: z
+    .object({
+      customerId: objectIdSchema.optional(),
+      parentName: z.string().trim().max(100).optional(),
+      phoneNumber: z.string().trim().max(20).optional(),
+    })
+    .optional(),
   paymentMethod: z.nativeEnum(PaymentMethod).optional(),
   notes: z.string().trim().max(500).optional(),
 });

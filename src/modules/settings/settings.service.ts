@@ -1,4 +1,5 @@
 import { settingsRepository } from './settings.repository';
+import { resolveMaximumSessionHours, resolveMinimumBillableMinutes } from './settings.model';
 import type { UpdateSettingsInput, BusinessSettingsPublic } from './settings.types';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
@@ -17,6 +18,10 @@ function toPublic(settings: Awaited<ReturnType<typeof settingsRepository.getOrCr
     taxPercentage: settings.taxPercentage,
     maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
     receiptPaperWidth: settings.receiptPaperWidth,
+    minimumBillableMinutes: resolveMinimumBillableMinutes(settings),
+    maximumSessionHours: resolveMaximumSessionHours(settings),
+    ticketSlipFooter: settings.ticketSlipFooter ?? '',
+    printQrAsRaster: settings.printQrAsRaster ?? false,
     updatedAt: settings.updatedAt,
   };
 }

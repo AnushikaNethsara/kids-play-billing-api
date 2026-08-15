@@ -90,6 +90,70 @@ export function isDiscountAboveThreshold(
   return discountEquivalentPercentage(subtotal, discountType, discountValue) > thresholdPercentage + 1e-9;
 }
 
+const MILLISECONDS_PER_MINUTE = 60_000;
+
+/**
+ * Whole minutes between check-in and check-out, rounding a partial minute up - a child
+ * who played 14m 10s is billed 15 minutes, never 14.
+ */
+export function calculateElapsedMinutes(checkInAt: Date, checkOutAt: Date): number {
+  const elapsedMs = checkOutAt.getTime() - checkInAt.getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    throw new ValidationError('Check-out time must be after check-in time');
+  }
+  return Math.ceil(elapsedMs / MILLISECONDS_PER_MINUTE);
+}
+
+export interface BilledDuration {
+  elapsedMinutes: number;
+  billedMinutes: number;
+  /** True when the visit was shorter than the configured minimum and was floored up to it. */
+  minimumApplied: boolean;
+}
+
+/**
+ * Elapsed time floored at BusinessSettings.minimumBillableMinutes, so a child who cries
+ * and leaves after two minutes still produces a sane bill rather than a near-zero one.
+ */
+export function calculateBilledMinutes(params: {
+  checkInAt: Date;
+  checkOutAt: Date;
+  minimumBillableMinutes: number;
+}): BilledDuration {
+  const elapsedMinutes = calculateElapsedMinutes(params.checkInAt, params.checkOutAt);
+  const minimum = Math.max(params.minimumBillableMinutes, 0);
+  const billedMinutes = Math.max(elapsedMinutes, minimum);
+
+  return { elapsedMinutes, billedMinutes, minimumApplied: billedMinutes > elapsedMinutes };
+}
+
+/**
+ * A play package is a RATE, not a flat-price product: `unitPrice` buys
+ * `rateDurationMinutes` of play, and any other duration is priced pro-rata from it.
+ * LKR 1000.00 per 60 min, billed 75 min -> LKR 1250.00; billed 15 min -> LKR 250.00.
+ *
+ * Rounds exactly once, to whole minor units, in the same spirit as calculatePercentage.
+ */
+export function calculateSessionLineTotal(params: {
+  unitPrice: number;
+  rateDurationMinutes: number;
+  billedMinutes: number;
+}): number {
+  const { unitPrice, rateDurationMinutes, billedMinutes } = params;
+
+  if (!Number.isFinite(rateDurationMinutes) || rateDurationMinutes <= 0) {
+    throw new ValidationError('Play package duration must be greater than zero to price a session');
+  }
+  if (!Number.isFinite(billedMinutes) || billedMinutes < 0) {
+    throw new ValidationError('Billed minutes cannot be negative');
+  }
+  if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+    throw new ValidationError('Play package price cannot be negative');
+  }
+
+  return Math.round((unitPrice * billedMinutes) / rateDurationMinutes);
+}
+
 export interface BillTotals {
   subtotal: number;
   discount: number;

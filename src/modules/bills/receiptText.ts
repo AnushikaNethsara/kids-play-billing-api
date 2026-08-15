@@ -28,6 +28,14 @@ export function twoColumnLine(label: string, value: string, width: number): stri
   return label + ' '.repeat(width - combinedLength) + value;
 }
 
+/** "1h 17m" / "45m" - compact enough for a 32-column receipt. */
+export function formatDuration(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
+}
+
 export function wrapText(text: string, width: number): string[] {
   if (text.length <= width) return [text];
   const lines: string[] = [];

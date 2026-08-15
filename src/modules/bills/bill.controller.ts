@@ -8,6 +8,7 @@ import { AuthenticationError, AuthorizationError, NotFoundError } from '../../co
 import { UserRole } from '../../common/constants/roles';
 import type {
   CreateBillInput,
+  CreateBillFromSessionsInput,
   UpdateBillInput,
   CompleteBillInput,
   CancelBillInput,
@@ -36,6 +37,15 @@ export const billController = {
     const actor = requireActor(req);
     const bill = await billService.createDraft(req.body as CreateBillInput, actor);
     sendSuccess(res, bill, { statusCode: 201, message: 'Draft bill created successfully' });
+  },
+
+  async createFromSessions(req: Request, res: Response): Promise<void> {
+    const actor = requireActor(req);
+    const bill = await billService.createDraftFromSessions(
+      req.body as CreateBillFromSessionsInput,
+      actor,
+    );
+    sendSuccess(res, bill, { statusCode: 201, message: 'Draft bill created from tickets' });
   },
 
   async list(req: Request, res: Response): Promise<void> {

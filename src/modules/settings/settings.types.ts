@@ -12,6 +12,10 @@ export interface UpdateSettingsInput {
   taxPercentage?: number;
   maximumCashierDiscountPercentage?: number;
   receiptPaperWidth?: PaperWidth;
+  minimumBillableMinutes?: number;
+  maximumSessionHours?: number;
+  ticketSlipFooter?: string;
+  printQrAsRaster?: boolean;
 }
 
 export interface BusinessSettingsPublic extends UpdateSettingsInput {
@@ -26,5 +30,9 @@ export interface BusinessSettingsPublic extends UpdateSettingsInput {
   taxPercentage: number;
   maximumCashierDiscountPercentage: number;
   receiptPaperWidth: PaperWidth;
+  minimumBillableMinutes: number;
+  maximumSessionHours: number;
+  ticketSlipFooter: string;
+  printQrAsRaster: boolean;
   updatedAt: Date;
 }

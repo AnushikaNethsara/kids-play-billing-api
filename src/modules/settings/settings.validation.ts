@@ -14,5 +14,9 @@ export const updateSettingsSchema = z
     taxPercentage: z.number().min(0).max(100).optional(),
     maximumCashierDiscountPercentage: z.number().min(0).max(100).optional(),
     receiptPaperWidth: z.nativeEnum(PaperWidth).optional(),
+    minimumBillableMinutes: z.number().int().min(0).max(24 * 60).optional(),
+    maximumSessionHours: z.number().int().min(1).max(168).optional(),
+    ticketSlipFooter: z.string().trim().max(200).optional(),
+    printQrAsRaster: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field is required' });

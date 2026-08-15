@@ -6,10 +6,25 @@ export interface BillItemSubdocument {
   childName: string;
   playPackageId: Types.ObjectId;
   packageName: string;
+  /**
+   * For a session-billed item this is the RATE denominator: `unitPrice` buys this many
+   * minutes. For legacy flat-price items it is descriptive only.
+   */
   durationMinutes: number;
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+
+  /**
+   * Set only on items billed from a timed play session. Null on bills created through
+   * the flat-price `POST /bills` path and on every bill predating play sessions, which
+   * is what selects the legacy `unitPrice * quantity` presentation - no data migration
+   * was needed to introduce time-based billing.
+   */
+  playSessionId: Types.ObjectId | null;
+  checkInAt: Date | null;
+  checkOutAt: Date | null;
+  billedMinutes: number | null;
 }
 
 export interface BillDocument {
@@ -55,6 +70,10 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     unitPrice: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1, default: 1 },
     lineTotal: { type: Number, required: true },
+    playSessionId: { type: Schema.Types.ObjectId, ref: 'PlaySession', default: null },
+    checkInAt: { type: Date, default: null },
+    checkOutAt: { type: Date, default: null },
+    billedMinutes: { type: Number, default: null },
   },
   { _id: false },
 );
@@ -94,8 +113,23 @@ const billSchema = new Schema<BillDocument>(
   { timestamps: true },
 );
 
-// Bill number lookups (receipts, reprints) and uniqueness once assigned at completion.
-billSchema.index({ billNumber: 1 }, { unique: true, sparse: true });
+/**
+ * Bill number lookups (receipts, reprints) and uniqueness once assigned at completion.
+ *
+ * This must be a PARTIAL index, not a sparse one. `billNumber` has `default: null`, so
+ * every draft carries the field explicitly - and a sparse index only skips documents
+ * where the field is *absent*, not where it is null. Under `sparse: true` every unpaid
+ * draft was indexed under the same `null` key, so creating a second draft while another
+ * was still unpaid failed with a duplicate-key error. Filtering on `$type: 'string'`
+ * indexes only bills that have actually been assigned a number at completion.
+ *
+ * Existing deployments carry the old index: drop `billNumber_1` once so this definition
+ * can be rebuilt, otherwise Mongo keeps the old options and the bug persists.
+ */
+billSchema.index(
+  { billNumber: 1 },
+  { unique: true, partialFilterExpression: { billNumber: { $type: 'string' } } },
+);
 // Dashboard revenue aggregations filter by status + paidAt range.
 billSchema.index({ status: 1, paidAt: -1 });
 // Cashier performance reports filter by cashier + paidAt range.

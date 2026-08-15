@@ -8,6 +8,16 @@ export interface ReceiptItem {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  /**
+   * Present only for items billed from a timed play session. Pre-formatted in the
+   * business timezone so the renderers - and the mobile app, which reprints from a
+   * cached copy - never have to do timezone maths of their own.
+   */
+  checkInTime?: string;
+  checkOutTime?: string;
+  billedMinutes?: number;
+  /** Human-readable elapsed time, e.g. "1h 17m". */
+  billedDuration?: string;
 }
 
 export interface ReceiptData {

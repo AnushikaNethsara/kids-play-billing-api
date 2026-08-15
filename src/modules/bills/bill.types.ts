@@ -24,6 +24,26 @@ export interface CreateBillInput {
   notes?: string;
 }
 
+/**
+ * Checkout. Identifies sessions by their printed ticket code rather than by database id,
+ * which is what lets a device that has been offline since check-in compose a complete
+ * checkout payload for a session the server has not seen yet - the sync engine pushes
+ * the sessions first, and no id mapping is needed on either side.
+ */
+export interface CreateBillFromSessionsInput {
+  ticketCodes: string[];
+  /** Device clock time. Defaults to server time when omitted. */
+  checkOutAt?: string;
+  discount?: CreateBillDiscountInput;
+  customer?: {
+    customerId?: string;
+    parentName?: string;
+    phoneNumber?: string;
+  };
+  paymentMethod?: PaymentMethod;
+  notes?: string;
+}
+
 export interface UpdateBillInput {
   customer?: {
     customerId?: string;
@@ -57,6 +77,11 @@ export interface BillItemPublic {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  /** Present only on items billed from a timed play session; null on flat-price items. */
+  playSessionId: string | null;
+  checkInAt: Date | null;
+  checkOutAt: Date | null;
+  billedMinutes: number | null;
 }
 
 export interface BillPublic {

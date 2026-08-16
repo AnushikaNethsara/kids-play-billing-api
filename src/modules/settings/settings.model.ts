@@ -37,8 +37,8 @@ export type BusinessSettingsHydrated = HydratedDocument<BusinessSettingsDocument
 
 const businessSettingsSchema = new Schema<BusinessSettingsDocument>(
   {
-    businessName: { type: String, default: 'Happy Kids Play Area' },
-    address: { type: String, default: 'Colombo, Sri Lanka' },
+    businessName: { type: String, default: 'Jellybean Kids Play Zone' },
+    address: { type: String, default: 'Badulla Road, Bidunuwewa, Bandarawela' },
     phoneNumber: { type: String, default: '' },
     receiptHeader: { type: String, default: 'WELCOME' },
     receiptFooter: { type: String, default: 'Thank you. Please visit again.' },

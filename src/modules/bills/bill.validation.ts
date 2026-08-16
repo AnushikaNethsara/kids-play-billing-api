@@ -90,6 +90,10 @@ export const listBillsQuerySchema = z.object({
   to: z.string().optional(),
   minTotal: z.coerce.number().int().min(0).optional(),
   maxTotal: z.coerce.number().int().min(0).optional(),
+  isTimed: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === 'true')),
   sort: z.enum(['newest', 'oldest', 'total_desc', 'total_asc']).optional(),
 });
 

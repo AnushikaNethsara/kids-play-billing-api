@@ -37,6 +37,31 @@ export interface DashboardSummary {
   topCashier: { cashierId: string; cashierName: string; revenue: number; billCount: number } | null;
 }
 
+/**
+ * Time-based metrics, derived from play sessions rather than bills. Only CLOSED sessions
+ * count: an ACTIVE one has no duration yet, and a VOIDED one never represented real play.
+ */
+export interface SessionSummary {
+  /** Sessions closed in the period. */
+  sessionCount: number;
+  totalPlayMinutes: number;
+  averagePlayMinutes: number;
+  longestPlayMinutes: number;
+  /** How often the configured minimum had to be applied - is the minimum set right? */
+  minimumAppliedCount: number;
+  /** Revenue per hour of play, a truer efficiency measure than revenue per bill. */
+  revenuePerPlayHour: number;
+  voidedCount: number;
+  voidsByCashier: { cashierId: string; cashierName: string; voidedCount: number }[];
+}
+
+export interface OccupancyPoint {
+  /** Hour of day, 0-23, in the business timezone. */
+  hour: number;
+  /** Distinct children present at any point during that hour, summed across the period. */
+  childCount: number;
+}
+
 export interface DailyRevenuePoint {
   date: string;
   grossRevenue: number;

@@ -40,4 +40,14 @@ export const dashboardController = {
     const bills = await dashboardService.getRecentBills(req.query as unknown as RecentBillsQuery);
     sendSuccess(res, bills);
   },
+
+  async sessions(req: Request, res: Response): Promise<void> {
+    const summary = await dashboardService.getSessionSummary(req.query as unknown as DashboardQuery);
+    sendSuccess(res, summary);
+  },
+
+  async occupancy(req: Request, res: Response): Promise<void> {
+    const occupancy = await dashboardService.getOccupancy(req.query as unknown as DashboardQuery);
+    sendSuccess(res, occupancy);
+  },
 };

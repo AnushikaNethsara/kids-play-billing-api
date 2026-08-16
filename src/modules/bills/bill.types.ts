@@ -128,5 +128,11 @@ export interface ListBillsQuery {
   to?: string;
   minTotal?: number;
   maxTotal?: number;
+  /**
+   * Separates time-billed bills from legacy flat-price ones. Both shapes coexist
+   * permanently and price completely differently, so being able to report on one without
+   * the other matters. A bill is never a mix of the two.
+   */
+  isTimed?: boolean;
   sort?: 'newest' | 'oldest' | 'total_desc' | 'total_asc';
 }

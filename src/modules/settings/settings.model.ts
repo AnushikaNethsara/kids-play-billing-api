@@ -55,7 +55,7 @@ const businessSettingsSchema = new Schema<BusinessSettingsDocument>(
       max: 24 * 60,
     },
     maximumSessionHours: { type: Number, default: DEFAULT_MAXIMUM_SESSION_HOURS, min: 1, max: 168 },
-    ticketSlipFooter: { type: String, default: 'Keep this slip - required for checkout.' },
+    ticketSlipFooter: { type: String, default: 'Keep this slip.\nRequired for checkout.' },
     printQrAsRaster: { type: Boolean, default: false },
   },
   { timestamps: true },

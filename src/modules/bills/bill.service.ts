@@ -362,6 +362,25 @@ export const billService = {
         await playSessionRepository.setBillId(session._id, bill._id);
       }
 
+      // An admin supplying an explicit exit time is closing a ticket someone abandoned,
+      // not ringing up a customer at the till. That is a bill created without the parent
+      // present, so it belongs in the audit trail distinctly from a normal checkout.
+      if (actor.role === UserRole.ADMIN && input.checkOutAt) {
+        await auditLogService.record({
+          userId: actor.id,
+          userName: actor.name,
+          action: AuditAction.SESSION_FORCE_CLOSED,
+          entityType: AuditEntityType.BILL,
+          entityId: bill.id,
+          metadata: {
+            ticketCodes,
+            checkOutAt: checkOutAt.toISOString(),
+            grandTotal: totals.grandTotal,
+            children: claimed.map((session) => session.childName),
+          },
+        });
+      }
+
       return toPublicBill(bill);
     } catch (err) {
       await releaseClaimedSessions(claimed);

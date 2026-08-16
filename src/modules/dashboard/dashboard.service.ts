@@ -1,7 +1,10 @@
 import { BillModel } from '../bills/bill.model';
+import { PlaySessionModel } from '../play-sessions/playSession.model';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { settingsService } from '../settings/settings.service';
+import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { resolveDateRange } from '../../common/utils/dateRange';
 import type {
   DashboardQuery,
@@ -15,6 +18,8 @@ import type {
   PackagePerformance,
   PaymentMethodBreakdown,
   CashierPerformance,
+  SessionSummary,
+  OccupancyPoint,
 } from './dashboard.types';
 import { billService } from '../bills/bill.service';
 import type { BillPublic } from '../bills/bill.types';
@@ -288,5 +293,152 @@ export const dashboardService = {
       sort: 'newest',
     });
     return bills;
+  },
+
+  /**
+   * Time-based metrics. Unlike every other method here these read PlaySessionModel rather
+   * than BillModel, because a bill records what was charged and a session records how long
+   * the child was actually in the play area - and with pro-rata pricing those are now
+   * separate questions worth answering separately.
+   */
+  async getSessionSummary(query: DashboardQuery): Promise<SessionSummary> {
+    const { start, end } = await resolveRange(query);
+    const settings = await settingsService.getRaw();
+    const minimumBillableMinutes = resolveMinimumBillableMinutes(settings);
+
+    const closedMatch = {
+      status: PlaySessionStatus.CLOSED,
+      checkOutAt: { $gte: start, $lte: end },
+    };
+
+    const [totals] = await PlaySessionModel.aggregate<{
+      sessionCount: number;
+      totalPlayMinutes: number;
+      longestPlayMinutes: number;
+      minimumAppliedCount: number;
+      revenue: number;
+    }>([
+      { $match: closedMatch },
+      {
+        $group: {
+          _id: null,
+          sessionCount: { $sum: 1 },
+          totalPlayMinutes: { $sum: '$billedMinutes' },
+          longestPlayMinutes: { $max: '$billedMinutes' },
+          // A session billed at exactly the minimum is one where the child left early
+          // enough for the floor to bite.
+          minimumAppliedCount: {
+            $sum: {
+              $cond: [{ $lte: ['$billedMinutes', minimumBillableMinutes] }, 1, 0],
+            },
+          },
+          revenue: {
+            $sum: {
+              $round: [
+                {
+                  $divide: [
+                    { $multiply: ['$unitPrice', '$billedMinutes'] },
+                    '$rateDurationMinutes',
+                  ],
+                },
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]);
+
+    const voidsByCashier = await PlaySessionModel.aggregate<{
+      _id: string;
+      cashierName: string;
+      voidedCount: number;
+    }>([
+      {
+        $match: {
+          status: PlaySessionStatus.VOIDED,
+          voidedAt: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: '$checkInCashierId',
+          cashierName: { $first: '$checkInCashierName' },
+          voidedCount: { $sum: 1 },
+        },
+      },
+      { $sort: { voidedCount: -1 } },
+    ]);
+
+    const sessionCount = totals?.sessionCount ?? 0;
+    const totalPlayMinutes = totals?.totalPlayMinutes ?? 0;
+    const revenue = totals?.revenue ?? 0;
+    const playHours = totalPlayMinutes / 60;
+
+    return {
+      sessionCount,
+      totalPlayMinutes,
+      averagePlayMinutes: sessionCount > 0 ? Math.round(totalPlayMinutes / sessionCount) : 0,
+      longestPlayMinutes: totals?.longestPlayMinutes ?? 0,
+      minimumAppliedCount: totals?.minimumAppliedCount ?? 0,
+      revenuePerPlayHour: playHours > 0 ? Math.round(revenue / playHours) : 0,
+      voidedCount: voidsByCashier.reduce((sum, row) => sum + row.voidedCount, 0),
+      voidsByCashier: voidsByCashier.map((row) => ({
+        cashierId: row._id?.toString() ?? '',
+        cashierName: row.cashierName,
+        voidedCount: row.voidedCount,
+      })),
+    };
+  },
+
+  /**
+   * Children present per hour of day - the staffing question.
+   *
+   * This is an interval problem, not a bucketing one: a session running 10:15-13:40 is
+   * present in four separate hours, so grouping by check-in hour would answer a different
+   * (and less useful) question about arrivals. The expansion is done in JS deliberately -
+   * the volume is hundreds of sessions per period, and the readable version is worth far
+   * more here than a clever pipeline.
+   */
+  async getOccupancy(query: DashboardQuery): Promise<OccupancyPoint[]> {
+    const { start, end, timezone } = await resolveRange(query);
+
+    const sessions = await PlaySessionModel.find(
+      {
+        status: { $in: [PlaySessionStatus.CLOSED, PlaySessionStatus.ACTIVE] },
+        checkInAt: { $lte: end },
+        $or: [{ checkOutAt: { $gte: start } }, { checkOutAt: null }],
+      },
+      { checkInAt: 1, checkOutAt: 1 },
+    ).lean();
+
+    const buckets = new Array<number>(24).fill(0);
+    const now = new Date();
+
+    for (const session of sessions) {
+      // An still-open session is counted up to now, not indefinitely.
+      const from = new Date(Math.max(session.checkInAt.getTime(), start.getTime()));
+      const rawTo = session.checkOutAt ?? now;
+      const to = new Date(Math.min(rawTo.getTime(), end.getTime()));
+      if (to.getTime() <= from.getTime()) continue;
+
+      // Walk hour by hour, reading the hour in the business timezone so a visit crossing
+      // midnight lands on the right side of the day for this business, not for UTC.
+      const cursor = new Date(from);
+      cursor.setUTCMinutes(0, 0, 0);
+      while (cursor.getTime() < to.getTime()) {
+        const hour = Number(
+          new Intl.DateTimeFormat('en-GB', {
+            timeZone: timezone,
+            hour: '2-digit',
+            hour12: false,
+          }).format(cursor),
+        );
+        buckets[hour % 24] += 1;
+        cursor.setUTCHours(cursor.getUTCHours() + 1);
+      }
+    }
+
+    return buckets.map((childCount, hour) => ({ hour, childCount }));
   },
 };

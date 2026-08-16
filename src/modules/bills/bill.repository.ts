@@ -70,6 +70,11 @@ export const billRepository = {
       if (filter.to) createdAt.$lte = new Date(filter.to);
       mongoFilter.createdAt = createdAt;
     }
+    if (filter.isTimed !== undefined) {
+      // Bills are never a mix of timed and flat lines, so testing the array field is
+      // unambiguous here.
+      mongoFilter['items.playSessionId'] = filter.isTimed ? { $ne: null } : null;
+    }
     if (filter.minTotal !== undefined || filter.maxTotal !== undefined) {
       const grandTotal: Record<string, number> = {};
       if (filter.minTotal !== undefined) grandTotal.$gte = filter.minTotal;

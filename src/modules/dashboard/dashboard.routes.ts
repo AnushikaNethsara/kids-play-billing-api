@@ -93,6 +93,37 @@ router.get('/cashiers', validate({ query: dashboardQuerySchema }), asyncHandler(
 
 /**
  * @openapi
+ * /dashboard/sessions:
+ *   get:
+ *     summary: Time-based play metrics
+ *     description: >
+ *       Reads play sessions rather than bills. A bill records what was charged; a session
+ *       records how long the child was actually in the play area, and with pro-rata
+ *       pricing those are separate questions. Only CLOSED sessions contribute.
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Average and total play time, minimum-applied count, revenue per play hour, voids by cashier }
+ */
+router.get('/sessions', validate({ query: dashboardQuerySchema }), asyncHandler(dashboardController.sessions));
+
+/**
+ * @openapi
+ * /dashboard/occupancy:
+ *   get:
+ *     summary: Children present per hour of day
+ *     description: >
+ *       Concurrent occupancy, not arrivals: a session running 10:15-13:40 counts in all
+ *       four hours it spans. Hours are resolved in the business timezone.
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: 24 buckets, one per hour }
+ */
+router.get('/occupancy', validate({ query: dashboardQuerySchema }), asyncHandler(dashboardController.occupancy));
+
+/**
+ * @openapi
  * /dashboard/recent-bills:
  *   get:
  *     summary: Most recently created bills across all cashiers

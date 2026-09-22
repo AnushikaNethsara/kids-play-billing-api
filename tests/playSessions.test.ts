@@ -545,4 +545,52 @@ describe('play sessions', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe('children by phone number', () => {
+    it('lists the distinct children checked in under a phone number, most recent first', async () => {
+      const { accessToken } = await createCashier();
+      const pkg = await createHourlyPackage();
+      const phoneNumber = '0779998888';
+
+      await checkIn(accessToken, pkg.id, {
+        childName: 'Amaya',
+        customer: { parentName: 'Sunil Silva', phoneNumber },
+        checkInAt: minutesAgo(120),
+      });
+      await checkIn(accessToken, pkg.id, {
+        childName: 'Binura',
+        customer: { parentName: 'Sunil Silva', phoneNumber },
+        checkInAt: minutesAgo(60),
+      });
+      // A repeat visit for the first child shouldn't produce a duplicate entry.
+      await checkIn(accessToken, pkg.id, {
+        childName: 'Amaya',
+        customer: { parentName: 'Sunil Silva', phoneNumber },
+        checkInAt: minutesAgo(10),
+      });
+
+      const res = await request(app)
+        .get(`${API}/customers/children`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .query({ phoneNumber });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.map((child: { childName: string }) => child.childName)).toEqual([
+        'Amaya',
+        'Binura',
+      ]);
+    });
+
+    it('is empty for a phone number with no history', async () => {
+      const { accessToken } = await createCashier();
+
+      const res = await request(app)
+        .get(`${API}/customers/children`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .query({ phoneNumber: '0700000000' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual([]);
+    });
+  });
 });

@@ -22,6 +22,11 @@ function toPublic(settings: Awaited<ReturnType<typeof settingsRepository.getOrCr
     maximumSessionHours: resolveMaximumSessionHours(settings),
     ticketSlipFooter: settings.ticketSlipFooter ?? '',
     printQrAsRaster: settings.printQrAsRaster ?? false,
+    logoImageBase64: settings.logoImageBase64 ?? '',
+    logoRasterBase64: settings.logoRasterBase64 ?? '',
+    logoRasterWidthDots: settings.logoRasterWidthDots ?? 0,
+    logoRasterHeightDots: settings.logoRasterHeightDots ?? 0,
+    showLogoOnReceipt: settings.showLogoOnReceipt ?? false,
     updatedAt: settings.updatedAt,
   };
 }

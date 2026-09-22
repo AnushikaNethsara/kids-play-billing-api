@@ -86,6 +86,27 @@ export const playSessionRepository = {
     ).exec();
   },
 
+  /**
+   * Distinct child names checked in under this phone number, most recently seen first -
+   * lets the cashier pick a returning child instead of retyping a name that's just going
+   * to collide with itself under a different spelling. Keyed off `phoneNumber` rather
+   * than `customerId`: the session always carries whatever number the cashier typed,
+   * while `customerId` is only ever set when they explicitly picked a matched customer,
+   * so it misses most of this same parent's earlier check-ins.
+   */
+  async findRecentChildrenByPhoneNumber(
+    phoneNumber: string,
+  ): Promise<{ childName: string; lastCheckInAt: Date }[]> {
+    const rows = await PlaySessionModel.aggregate<{ childName: string; lastCheckInAt: Date }>([
+      { $match: { phoneNumber } },
+      { $sort: { checkInAt: -1 } },
+      { $group: { _id: '$childName', lastCheckInAt: { $first: '$checkInAt' } } },
+      { $sort: { lastCheckInAt: -1 } },
+      { $project: { _id: 0, childName: '$_id', lastCheckInAt: 1 } },
+    ]).exec();
+    return rows;
+  },
+
   async list(filter: ListPlaySessionsQuery): Promise<{ sessions: PlaySessionHydrated[]; total: number }> {
     const mongoFilter: Record<string, unknown> = {};
 

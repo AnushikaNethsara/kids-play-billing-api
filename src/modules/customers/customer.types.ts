@@ -30,3 +30,8 @@ export interface ListCustomersQuery {
   limit: number;
   search?: string;
 }
+
+export interface CustomerChild {
+  childName: string;
+  lastCheckInAt: Date;
+}

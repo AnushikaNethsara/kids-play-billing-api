@@ -16,6 +16,11 @@ export interface UpdateSettingsInput {
   maximumSessionHours?: number;
   ticketSlipFooter?: string;
   printQrAsRaster?: boolean;
+  logoImageBase64?: string;
+  logoRasterBase64?: string;
+  logoRasterWidthDots?: number;
+  logoRasterHeightDots?: number;
+  showLogoOnReceipt?: boolean;
 }
 
 export interface BusinessSettingsPublic extends UpdateSettingsInput {
@@ -34,5 +39,10 @@ export interface BusinessSettingsPublic extends UpdateSettingsInput {
   maximumSessionHours: number;
   ticketSlipFooter: string;
   printQrAsRaster: boolean;
+  logoImageBase64: string;
+  logoRasterBase64: string;
+  logoRasterWidthDots: number;
+  logoRasterHeightDots: number;
+  showLogoOnReceipt: boolean;
   updatedAt: Date;
 }

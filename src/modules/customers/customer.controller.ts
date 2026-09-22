@@ -30,4 +30,10 @@ export const customerController = {
     const customers = await customerService.searchByPhoneNumber(phoneNumber);
     sendSuccess(res, customers);
   },
+
+  async getChildren(req: Request, res: Response): Promise<void> {
+    const { phoneNumber } = req.query as unknown as { phoneNumber: string };
+    const children = await customerService.getChildrenByPhoneNumber(phoneNumber);
+    sendSuccess(res, children);
+  },
 };

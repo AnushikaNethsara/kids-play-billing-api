@@ -29,3 +29,7 @@ export const customerIdParamSchema = z.object({
 export const searchCustomerQuerySchema = z.object({
   phoneNumber: z.string().trim().min(1, 'phoneNumber query parameter is required'),
 });
+
+export const childrenQuerySchema = z.object({
+  phoneNumber: z.string().trim().min(1, 'phoneNumber query parameter is required'),
+});

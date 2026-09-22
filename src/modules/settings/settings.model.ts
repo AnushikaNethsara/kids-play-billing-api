@@ -26,6 +26,19 @@ export interface BusinessSettingsDocument {
   ticketSlipFooter: string;
   /** Printers that do not implement the native GS ( k QR command need a raster bitmap instead. */
   printQrAsRaster: boolean;
+  /** Data URL (PNG), rendered in the admin dashboard as a preview of the uploaded logo. */
+  logoImageBase64: string;
+  /**
+   * The logo pre-dithered to a 1-bit-per-pixel ESC/POS raster and packed into bytes,
+   * base64-encoded - computed once in the browser at upload time (Canvas has none of the
+   * decode/dither work a bare device would need to redo on every print) so the printer
+   * only ever has to blast bytes it was handed, never decode an image itself.
+   */
+  logoRasterBase64: string;
+  logoRasterWidthDots: number;
+  logoRasterHeightDots: number;
+  /** Gate on whether the logo actually prints - a business can upload one ahead of time. */
+  showLogoOnReceipt: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -57,6 +70,11 @@ const businessSettingsSchema = new Schema<BusinessSettingsDocument>(
     maximumSessionHours: { type: Number, default: DEFAULT_MAXIMUM_SESSION_HOURS, min: 1, max: 168 },
     ticketSlipFooter: { type: String, default: 'Keep this slip.\nRequired for checkout.' },
     printQrAsRaster: { type: Boolean, default: false },
+    logoImageBase64: { type: String, default: '' },
+    logoRasterBase64: { type: String, default: '' },
+    logoRasterWidthDots: { type: Number, default: 0 },
+    logoRasterHeightDots: { type: Number, default: 0 },
+    showLogoOnReceipt: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

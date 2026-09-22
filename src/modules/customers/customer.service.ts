@@ -1,10 +1,12 @@
 import { customerRepository } from './customer.repository';
+import { playSessionRepository } from '../play-sessions/playSession.repository';
 import type { CustomerHydrated } from './customer.model';
 import type {
   CreateCustomerInput,
   UpdateCustomerInput,
   ListCustomersQuery,
   CustomerPublic,
+  CustomerChild,
 } from './customer.types';
 import { NotFoundError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
@@ -69,6 +71,11 @@ export const customerService = {
   async searchByPhoneNumber(phoneNumber: string): Promise<CustomerPublic[]> {
     const customers = await customerRepository.searchByPhoneNumber(phoneNumber);
     return customers.map(toPublic);
+  },
+
+  /** Children previously checked in under this phone number, most recent first. */
+  async getChildrenByPhoneNumber(phoneNumber: string): Promise<CustomerChild[]> {
+    return playSessionRepository.findRecentChildrenByPhoneNumber(phoneNumber);
   },
 
   /**

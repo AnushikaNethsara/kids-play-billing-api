@@ -9,6 +9,7 @@ import {
   listCustomersQuerySchema,
   customerIdParamSchema,
   searchCustomerQuerySchema,
+  childrenQuerySchema,
 } from './customer.validation';
 
 const router = Router();
@@ -63,6 +64,27 @@ router.get(
   '/search',
   validate({ query: searchCustomerQuerySchema }),
   asyncHandler(customerController.search),
+);
+
+/**
+ * @openapi
+ * /customers/children:
+ *   get:
+ *     summary: Distinct children previously checked in under a phone number, most recent first
+ *     tags: [Customers]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: phoneNumber
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Children previously checked in under this phone number }
+ */
+router.get(
+  '/children',
+  validate({ query: childrenQuerySchema }),
+  asyncHandler(customerController.getChildren),
 );
 
 /**

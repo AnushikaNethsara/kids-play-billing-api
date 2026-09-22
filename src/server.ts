@@ -1,12 +1,16 @@
 import { createApp } from './app';
 import { env } from './config/env';
 import { connectDatabase, disconnectDatabase } from './database/connection';
+import { ensureIndexes } from './database/ensureIndexes';
 import { logger } from './common/logger/logger';
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
 async function main() {
   await connectDatabase();
+  // Before the first request: an index left over from an earlier schema silently
+  // breaks writes that the code itself has no bug in.
+  await ensureIndexes();
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

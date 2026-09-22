@@ -5,6 +5,16 @@ import { logger } from '../common/logger/logger';
 import { env } from '../config/env';
 import type { ErrorResponseBody } from '../common/utils/apiResponse';
 
+/** MongoDB's unique-index violation, thrown by the driver as a MongoServerError. */
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === 11000
+  );
+}
+
 export function notFoundHandler(req: Request, res: Response): void {
   const body: ErrorResponseBody = {
     success: false,
@@ -48,6 +58,27 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
       requestId: String(req.id),
     };
     res.status(400).json(body);
+    return;
+  }
+
+  // A duplicate-key error is a conflict, not a server fault the caller should retry.
+  // Sent as a 500 it reads as transient, and an offline-first client will re-send the
+  // same request forever against a condition no retry can clear. Logged at error level
+  // regardless: reaching here means a uniqueness rule was hit that the code did not
+  // check for, which is usually a bug or an index that no longer matches its schema.
+  if (isDuplicateKeyError(err)) {
+    logger.error({ err, requestId: req.id }, 'Duplicate key error');
+
+    const body: ErrorResponseBody = {
+      success: false,
+      error: {
+        code: 'DUPLICATE_RESOURCE',
+        message: 'A record with these details already exists',
+        details: env.isProduction ? undefined : { message: (err as Error).message },
+      },
+      requestId: String(req.id),
+    };
+    res.status(409).json(body);
     return;
   }
 

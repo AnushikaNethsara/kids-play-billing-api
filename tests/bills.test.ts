@@ -72,7 +72,7 @@ describe('bills', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.bill.status).toBe('PAID');
-    expect(res.body.data.bill.billNumber).toMatch(/^KPA-\d{8}-\d{4}$/);
+    expect(res.body.data.bill.billNumber).toMatch(/^KPA-\d{8}-\d{6}$/);
     expect(res.body.data.bill.balance).toBe(20000);
     expect(res.body.data.receipt.bill.billNumber).toBe(res.body.data.bill.billNumber);
   });
@@ -120,7 +120,11 @@ describe('bills', () => {
     expect(second.body.message).toMatch(/idempotent replay/i);
   });
 
-  it('generates unique, sequential bill numbers for the same business day', async () => {
+  it('gives every bill a distinct, chronologically ordered number', async () => {
+    // Deliberately not "sequential" any more. The number used to end in a per-day counter,
+    // which told any customer holding a receipt how many bills the business had taken that
+    // day; it now carries the time of payment instead. What still has to hold is that two
+    // bills never share a number and that the order is readable from the string.
     const { accessToken } = await createCashier();
     const pkg = await createPlayPackage();
 
@@ -136,7 +140,15 @@ describe('bills', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .send({ paymentMethod: 'CASH' });
 
-    expect(complete1.body.data.bill.billNumber).not.toBe(complete2.body.data.bill.billNumber);
+    const first = complete1.body.data.bill.billNumber as string;
+    const second = complete2.body.data.bill.billNumber as string;
+
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^KPA-\d{8}-\d{6}(-\d+)?$/);
+    expect(second).toMatch(/^KPA-\d{8}-\d{6}(-\d+)?$/);
+    // Both complete within the same second here, so the second one carries the suffix that
+    // keeps it unique - and plain string order still puts them the right way round.
+    expect(second > first).toBe(true);
   });
 
   it('applies a fixed discount within the cashier cap', async () => {

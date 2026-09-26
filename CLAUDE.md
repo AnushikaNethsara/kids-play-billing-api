@@ -78,6 +78,13 @@ reports must never recompute from the current `PlayPackage` price.
   be completed/cancelled/refunded twice even without any header. On top of that,
   `bills/idempotency.service.ts` + the `Idempotency-Key` request header give exact
   response replay for client retries (used by `POST /bills/:id/complete`).
+- **Test bills**: `POST /bills/:id/test` (admin) sets `Bill.isTestBill`, which every
+  dashboard pipeline filters out with `isTestBill: { $ne: true }` - `$ne: true`, not
+  `false`, because bills predating the flag have no such field. Only settable once the
+  bill has left `DRAFT` (compare-and-set in `bill.repository.ts#setTestFlagIfSettled`).
+  Marking also unwinds the customer's `visitCount`/`totalSpent` and denormalises the flag
+  onto the bill's play sessions, since session metrics read `PlaySessionModel` directly.
+  Nothing about the bill's money, number or receipt changes.
 - **Discount cap**: `billCalculator.ts#validateDiscountPermission` caps cashiers at
   `BusinessSettings.maximumCashierDiscountPercentage`; admins are uncapped. Discounts
   above that threshold get an audit log entry regardless of role.

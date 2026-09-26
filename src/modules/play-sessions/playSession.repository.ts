@@ -75,6 +75,19 @@ export const playSessionRepository = {
     await PlaySessionModel.updateOne({ _id: sessionId }, { $set: { billId } }).exec();
   },
 
+  /**
+   * Propagates a bill's test flag to the sessions it billed. Called only from the bill
+   * service - the session's copy of the flag is a denormalisation of the bill's, never an
+   * independent decision.
+   */
+  async setTestFlagByBillId(billId: Types.ObjectId | string, isTestBill: boolean): Promise<number> {
+    const result = await PlaySessionModel.updateMany(
+      { billId: new Types.ObjectId(billId) },
+      { $set: { isTestBill } },
+    ).exec();
+    return result.modifiedCount;
+  },
+
   async voidIfActive(
     id: string,
     update: { voidedBy: Types.ObjectId; voidReason: string; voidedAt: Date },

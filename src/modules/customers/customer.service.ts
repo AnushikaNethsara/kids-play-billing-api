@@ -114,4 +114,35 @@ export const customerService = {
 
     return customer.id;
   },
+
+  /**
+   * Corrects a visit that recordVisit already counted - currently only used when a bill
+   * is marked as, or unmarked from, a test bill. A test bill must not leave the parent
+   * with a visit and a lifetime spend the business never actually took.
+   *
+   * Resolves the customer exactly as recordVisit did, but never creates one: there is
+   * nothing to correct on a record that does not exist. `lastVisitAt` is deliberately
+   * left alone - the previous visit date is not recoverable from here, and a slightly
+   * late "last seen" is a far smaller lie than a wrong lifetime spend.
+   */
+  async adjustVisitStats(
+    customerRef: { id?: string; phoneNumber?: string },
+    delta: { visitCount: number; totalSpent: number },
+  ): Promise<void> {
+    let customer: CustomerHydrated | null = null;
+
+    if (customerRef.id) {
+      customer = await customerRepository.findById(customerRef.id);
+    } else if (customerRef.phoneNumber) {
+      customer = await customerRepository.findByPhoneNumber(customerRef.phoneNumber);
+    }
+
+    if (!customer) return;
+
+    // Clamped at zero: records get edited and merged between the visit and the
+    // correction, and a negative visit count or lifetime spend is worse than a low one.
+    customer.visitCount = Math.max(0, customer.visitCount + delta.visitCount);
+    customer.totalSpent = Math.max(0, customer.totalSpent + delta.totalSpent);
+    await customer.save();
+  },
 };

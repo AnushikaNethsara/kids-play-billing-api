@@ -11,6 +11,7 @@ import {
   completeBillSchema,
   cancelBillSchema,
   refundBillSchema,
+  setTestBillSchema,
   listBillsQuerySchema,
   billIdParamSchema,
   billNumberParamSchema,
@@ -280,6 +281,53 @@ router.post(
   requireRole(UserRole.ADMIN),
   validate({ params: billIdParamSchema, body: refundBillSchema }),
   asyncHandler(billController.refund),
+);
+
+/**
+ * @openapi
+ * /bills/{id}/test:
+ *   post:
+ *     summary: Mark a bill as a test bill, or restore it to normal reporting (admin-only)
+ *     description: >
+ *       A test bill is one that was rung up to try the system out rather than to take
+ *       money - staff training, a printer check, a demo. It keeps its bill number,
+ *       receipt and place in the bill list, but every dashboard figure, revenue total and
+ *       customer lifetime-spend calculation excludes it.
+ *
+ *       Only allowed once the bill has been checked out. A DRAFT is a live transaction
+ *       whose totals can still change, so flagging one is rejected with a 409.
+ *
+ *       Idempotent: sending the state the bill is already in succeeds and changes nothing.
+ *     tags: [Bills]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [isTestBill]
+ *             properties:
+ *               isTestBill: { type: boolean }
+ *               reason:
+ *                 type: string
+ *                 maxLength: 300
+ *                 description: Why this was a test. Ignored when clearing the flag.
+ *     responses:
+ *       200: { description: Test flag updated }
+ *       403: { description: Only admins may mark test bills }
+ *       409: { description: Bill is still a draft and has not been checked out }
+ */
+router.post(
+  '/:id/test',
+  requireRole(UserRole.ADMIN),
+  validate({ params: billIdParamSchema, body: setTestBillSchema }),
+  asyncHandler(billController.setTestFlag),
 );
 
 /**

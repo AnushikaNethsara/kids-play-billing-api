@@ -6,11 +6,13 @@ import { customerService } from '../customers/customer.service';
 import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { playSessionRepository } from '../play-sessions/playSession.repository';
+import { resolveSessionRate } from '../play-sessions/playSession.model';
 import type { PlaySessionHydrated } from '../play-sessions/playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
+import { SessionPricingMode } from '../../common/constants/pricingModes';
 import { UserRole } from '../../common/constants/roles';
 import {
   AuthorizationError,
@@ -22,9 +24,9 @@ import {
 import { InvalidPlayPackageError } from './bill.errors';
 import {
   calculateBillTotals,
-  calculateBilledMinutes,
-  calculateSessionLineTotal,
   isDiscountAboveThreshold,
+  priceSession,
+  priceSessionForPeriod,
   validateDiscountPermission,
 } from './billCalculator';
 import type { BillHydrated, BillItemSubdocument } from './bill.model';
@@ -44,6 +46,27 @@ import type { AuthenticatedUser } from '../../common/types/express';
 import { buildPaginationMeta } from '../../common/utils/pagination';
 
 function toPublicItem(item: BillItemSubdocument): BillItemPublic {
+  const pricingMode =
+    item.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
+      ? SessionPricingMode.BLOCK_WITH_GRACE
+      : SessionPricingMode.PRORATA;
+
+  // Reproduced here rather than stored, from inputs that were all snapshotted at billing
+  // time, so it is deterministic. Deriving at the boundary means no client ever works out
+  // a block split for itself, and `lineTotal` remains the one authority on the money.
+  const breakdown =
+    pricingMode === SessionPricingMode.BLOCK_WITH_GRACE && item.billedMinutes !== null
+      ? priceSession(
+          {
+            pricingMode,
+            unitPrice: item.unitPrice,
+            rateDurationMinutes: item.durationMinutes,
+            graceMinutes: item.graceMinutes ?? 0,
+          },
+          item.billedMinutes,
+        )
+      : null;
+
   return {
     childName: item.childName,
     playPackageId: item.playPackageId.toString(),
@@ -56,6 +79,13 @@ function toPublicItem(item: BillItemSubdocument): BillItemPublic {
     checkInAt: item.checkInAt ?? null,
     checkOutAt: item.checkOutAt ?? null,
     billedMinutes: item.billedMinutes ?? null,
+    pricingMode,
+    graceMinutes: item.graceMinutes ?? 0,
+    blocksCharged: breakdown?.blocksCharged ?? null,
+    blockSubtotal: breakdown?.blockSubtotal ?? null,
+    overageMinutes: breakdown?.overageMinutes ?? null,
+    overageAmount: breakdown?.overageAmount ?? null,
+    graceApplied: breakdown?.graceApplied ?? null,
   };
 }
 
@@ -132,6 +162,11 @@ async function buildItemSnapshots(items: CreateBillInput['items']): Promise<Bill
       checkInAt: null,
       checkOutAt: null,
       billedMinutes: null,
+      // Hard-coded rather than read off the package. A flat line is unitPrice x quantity
+      // and has no elapsed time to price, so if an admin has since switched this package
+      // to block pricing, that must not follow the line here.
+      pricingMode: SessionPricingMode.PRORATA,
+      graceMinutes: 0,
     } as BillItemSubdocument);
   }
 
@@ -273,9 +308,13 @@ export const billService = {
           );
         }
 
-        const { billedMinutes } = calculateBilledMinutes({
+        // The same call the live quote makes, so what the cashier was shown a moment ago
+        // and what is actually billed cannot come from two different implementations.
+        const rate = resolveSessionRate(session);
+        const { billedMinutes, breakdown } = priceSessionForPeriod({
           checkInAt: session.checkInAt,
           checkOutAt,
+          rate,
           minimumBillableMinutes,
         });
 
@@ -283,6 +322,7 @@ export const billService = {
         const claimedSession = await playSessionRepository.claimIfActive(ticketCode, {
           checkOutAt,
           billedMinutes,
+          chargedAmount: breakdown.lineTotal,
           checkOutCashierId: new Types.ObjectId(actor.id),
           checkOutCashierName: actor.name,
         });
@@ -302,11 +342,11 @@ export const billService = {
         durationMinutes: session.rateDurationMinutes,
         unitPrice: session.unitPrice,
         quantity: 1,
-        lineTotal: calculateSessionLineTotal({
-          unitPrice: session.unitPrice,
-          rateDurationMinutes: session.rateDurationMinutes,
-          billedMinutes: session.billedMinutes ?? 0,
-        }),
+        // Frozen on the session by the claim above, in the same atomic write as
+        // billedMinutes - so the bill and the session can never disagree about the amount.
+        lineTotal: session.chargedAmount ?? 0,
+        pricingMode: resolveSessionRate(session).pricingMode,
+        graceMinutes: resolveSessionRate(session).graceMinutes,
         playSessionId: session._id,
         checkInAt: session.checkInAt,
         checkOutAt: session.checkOutAt,

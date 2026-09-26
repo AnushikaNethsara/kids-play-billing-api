@@ -8,8 +8,11 @@ import {
   calculateElapsedMinutes,
   calculateBilledMinutes,
   calculateSessionLineTotal,
+  priceSession,
+  priceSessionForPeriod,
 } from './billCalculator';
 import { DiscountType } from '../../common/constants/billStatus';
+import { SessionPricingMode } from '../../common/constants/pricingModes';
 import { UserRole } from '../../common/constants/roles';
 import { ValidationError } from '../../common/errors';
 
@@ -279,6 +282,223 @@ describe('billCalculator', () => {
       expect(() =>
         calculateSessionLineTotal({ unitPrice: 100_000, rateDurationMinutes: 60, billedMinutes: -1 }),
       ).toThrow(ValidationError);
+    });
+  });
+
+  describe('priceSession (BLOCK_WITH_GRACE)', () => {
+    // The business's own worked table: LKR 600.00 buys the first hour, 10 minutes of grace
+    // follow every completed hour, and past that the whole remainder is charged per minute.
+    const HOURLY_BLOCK = {
+      pricingMode: SessionPricingMode.BLOCK_WITH_GRACE,
+      unitPrice: 60_000,
+      rateDurationMinutes: 60,
+      graceMinutes: 10,
+    };
+
+    it.each([
+      [20, 60_000, 'a short visit still buys the whole first hour'],
+      [45, 60_000, 'still inside the first hour'],
+      [60, 60_000, 'exactly one hour'],
+      [70, 60_000, 'ten minutes over, inside the grace'],
+      [71, 71_000, 'one minute past the grace charges all eleven minutes'],
+      [90, 90_000, 'half an hour past the first hour'],
+      [120, 120_000, 'exactly two hours'],
+      [130, 120_000, 'ten minutes into the third hour, inside the grace'],
+      [131, 131_000, 'one minute past the second grace'],
+    ])('bills %i minutes as %i (%s)', (billedMinutes, expected) => {
+      expect(priceSession(HOURLY_BLOCK, billedMinutes).lineTotal).toBe(expected);
+    });
+
+    it('reports the split so the receipt never has to recompute it', () => {
+      expect(priceSession(HOURLY_BLOCK, 90)).toEqual({
+        lineTotal: 90_000,
+        blocksCharged: 1,
+        blockSubtotal: 60_000,
+        overageMinutes: 30,
+        overageAmount: 30_000,
+        graceApplied: false,
+        inExtraTime: true,
+        minutesUntilNextCharge: 0,
+      });
+    });
+
+    it('flags a session the grace is currently absorbing, and counts down to the step', () => {
+      const result = priceSession(HOURLY_BLOCK, 65);
+      expect(result.graceApplied).toBe(true);
+      expect(result.overageAmount).toBe(0);
+      expect(result.inExtraTime).toBe(false);
+      // Six more minutes before the total jumps: charging starts at minute 71.
+      expect(result.minutesUntilNextCharge).toBe(6);
+    });
+
+    it('reports no overage inside the first block, where the minutes are already paid for', () => {
+      // A receipt for a 20-minute visit must read "1 x 1h", not "1 x 1h + 20m extra"
+      // against a total of 600 - that line would not add up.
+      const result = priceSession(HOURLY_BLOCK, 20);
+      expect(result.graceApplied).toBe(false);
+      expect(result.overageMinutes).toBe(0);
+      expect(result.overageAmount).toBe(0);
+      expect(result.lineTotal).toBe(60_000);
+      expect(result.minutesUntilNextCharge).toBe(51);
+    });
+
+    it('charges from the start of the block, not from the end of the grace', () => {
+      // 11 minutes over, not 1. This is the step the cashier app counts down to.
+      const withinGrace = priceSession(HOURLY_BLOCK, 70);
+      const pastGrace = priceSession(HOURLY_BLOCK, 71);
+      expect(pastGrace.lineTotal - withinGrace.lineTotal).toBe(11_000);
+    });
+
+    it('rounds the overage in one step rather than from a rounded per-minute rate', () => {
+      // LKR 800.00/60min is LKR 13.333.../min. 11 minutes is 14666.67 -> 14667 cents,
+      // whereas multiplying a rounded 1333 cents by 11 would give 14663.
+      const result = priceSession({ ...HOURLY_BLOCK, unitPrice: 80_000 }, 71);
+      expect(result.overageAmount).toBe(14_667);
+      expect(result.lineTotal).toBe(94_667);
+    });
+
+    it('generalises to a non-hourly block', () => {
+      // LKR 500.00 buys 30 min, 10 min grace. 45 min = one block + 15 chargeable minutes.
+      const halfHour = { ...HOURLY_BLOCK, unitPrice: 50_000, rateDurationMinutes: 30 };
+      expect(priceSession(halfHour, 35).lineTotal).toBe(50_000);
+      expect(priceSession(halfHour, 45).lineTotal).toBe(75_000);
+      expect(priceSession(halfHour, 60).lineTotal).toBe(100_000);
+    });
+
+    it('charges from the first minute over when there is no grace', () => {
+      const noGrace = { ...HOURLY_BLOCK, graceMinutes: 0 };
+      expect(priceSession(noGrace, 60).lineTotal).toBe(60_000);
+      expect(priceSession(noGrace, 61).lineTotal).toBe(61_000);
+    });
+
+    it('degrades to whole blocks, rather than throwing, when grace is as long as the block', () => {
+      // Validation rejects this combination, but a package saved before that rule existed
+      // must still be checkoutable. The remainder is always shorter than a block, so grace
+      // is never exceeded and the visit is simply charged by whole blocks - which errs in
+      // the customer's favour. Throwing here would strand a ticket that cannot be billed.
+      const grace60 = { ...HOURLY_BLOCK, graceMinutes: 60 };
+      expect(priceSession(grace60, 119).lineTotal).toBe(60_000);
+      expect(priceSession(grace60, 120).lineTotal).toBe(120_000);
+      // The countdown still points at something real: the next whole block, not minute 121.
+      expect(priceSession(grace60, 70).minutesUntilNextCharge).toBe(50);
+    });
+
+    it('never goes backwards as a visit gets longer', () => {
+      let previous = 0;
+      for (let minutes = 1; minutes <= 240; minutes += 1) {
+        const { lineTotal } = priceSession(HOURLY_BLOCK, minutes);
+        expect(lineTotal).toBeGreaterThanOrEqual(previous);
+        previous = lineTotal;
+      }
+    });
+
+    it('rejects the same bad inputs the pro-rata path rejects', () => {
+      expect(() => priceSession({ ...HOURLY_BLOCK, rateDurationMinutes: 0 }, 30)).toThrow(
+        ValidationError,
+      );
+      expect(() => priceSession({ ...HOURLY_BLOCK, unitPrice: -1 }, 30)).toThrow(
+        ValidationError,
+      );
+      expect(() => priceSession(HOURLY_BLOCK, -1)).toThrow(ValidationError);
+      expect(() => priceSession({ ...HOURLY_BLOCK, graceMinutes: -1 }, 90)).toThrow(
+        ValidationError,
+      );
+    });
+  });
+
+  describe('priceSession (PRORATA)', () => {
+    it('is exactly the pro-rata calculation, with nothing to split', () => {
+      const rate = { unitPrice: 100_000, rateDurationMinutes: 60 };
+      for (const billedMinutes of [15, 60, 75, 77]) {
+        expect(
+          priceSession(
+            { ...rate, pricingMode: SessionPricingMode.PRORATA, graceMinutes: 0 },
+            billedMinutes,
+          ),
+        ).toEqual({
+          lineTotal: calculateSessionLineTotal({ ...rate, billedMinutes }),
+          blocksCharged: 0,
+          blockSubtotal: 0,
+          overageMinutes: 0,
+          overageAmount: 0,
+          graceApplied: false,
+          inExtraTime: false,
+          minutesUntilNextCharge: null,
+        });
+      }
+    });
+
+    it('ignores a grace value, which means nothing under this mode', () => {
+      const rate = {
+        pricingMode: SessionPricingMode.PRORATA,
+        unitPrice: 100_000,
+        rateDurationMinutes: 60,
+        graceMinutes: 30,
+      };
+      expect(priceSession(rate, 75).lineTotal).toBe(125_000);
+    });
+  });
+
+  describe('priceSessionForPeriod', () => {
+    const checkInAt = new Date('2026-08-11T10:00:00.000Z');
+    const PRORATA_RATE = {
+      pricingMode: SessionPricingMode.PRORATA,
+      unitPrice: 60_000,
+      rateDurationMinutes: 60,
+      graceMinutes: 0,
+    };
+    const BLOCK_RATE = { ...PRORATA_RATE, pricingMode: SessionPricingMode.BLOCK_WITH_GRACE, graceMinutes: 10 };
+
+    it('still floors a pro-rata visit at the minimum', () => {
+      const result = priceSessionForPeriod({
+        checkInAt,
+        checkOutAt: new Date('2026-08-11T10:02:00.000Z'),
+        rate: PRORATA_RATE,
+        minimumBillableMinutes: 15,
+      });
+
+      expect(result.elapsedMinutes).toBe(2);
+      expect(result.billedMinutes).toBe(15);
+      expect(result.minimumApplied).toBe(true);
+      expect(result.breakdown.lineTotal).toBe(15_000);
+    });
+
+    it('does not let the minimum inflate a block visit, which would misreport play time', () => {
+      // The block fee is already the floor, so the minimum cannot change the money - but
+      // applying it would store billedMinutes: 15 for a two-minute visit, which is what
+      // the dashboard sums and what the receipt prints as the time played.
+      const result = priceSessionForPeriod({
+        checkInAt,
+        checkOutAt: new Date('2026-08-11T10:02:00.000Z'),
+        rate: BLOCK_RATE,
+        minimumBillableMinutes: 15,
+      });
+
+      expect(result.elapsedMinutes).toBe(2);
+      expect(result.billedMinutes).toBe(2);
+      expect(result.minimumApplied).toBe(false);
+      expect(result.breakdown.lineTotal).toBe(60_000);
+    });
+
+    it('prices the grace boundary from real timestamps', () => {
+      const atGrace = priceSessionForPeriod({
+        checkInAt,
+        checkOutAt: new Date('2026-08-11T11:10:00.000Z'),
+        rate: BLOCK_RATE,
+        minimumBillableMinutes: 15,
+      });
+      expect(atGrace.billedMinutes).toBe(70);
+      expect(atGrace.breakdown.lineTotal).toBe(60_000);
+
+      // One second past the grace is a whole minute past it, because elapsed time ceils.
+      const pastGrace = priceSessionForPeriod({
+        checkInAt,
+        checkOutAt: new Date('2026-08-11T11:10:01.000Z'),
+        rate: BLOCK_RATE,
+        minimumBillableMinutes: 15,
+      });
+      expect(pastGrace.billedMinutes).toBe(71);
+      expect(pastGrace.breakdown.lineTotal).toBe(71_000);
     });
   });
 

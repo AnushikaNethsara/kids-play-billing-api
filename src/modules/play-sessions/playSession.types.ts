@@ -1,4 +1,6 @@
 import type { PlaySessionStatus } from '../../common/constants/sessionStatus';
+import type { SessionPricingMode } from '../../common/constants/pricingModes';
+import type { SessionPriceBreakdown } from '../bills/billCalculator';
 
 export interface CheckInInput {
   ticketCode: string;
@@ -36,12 +38,16 @@ export interface PlaySessionPublic {
   packageName: string;
   rateDurationMinutes: number;
   unitPrice: number;
+  pricingMode: SessionPricingMode;
+  graceMinutes: number;
   customerId: string | null;
   parentName: string;
   phoneNumber: string;
   checkInAt: Date;
   checkOutAt: Date | null;
   billedMinutes: number | null;
+  /** What this session was billed, frozen at checkout. Null while still playing. */
+  chargedAmount: number | null;
   billId: string | null;
   checkInCashierId: string;
   checkInCashierName: string;
@@ -64,10 +70,19 @@ export interface SessionQuote {
   asOf: Date;
   elapsedMinutes: number;
   billedMinutes: number;
+  /** Always false under BLOCK_WITH_GRACE, where the block fee is already the floor. */
   minimumApplied: boolean;
   lineTotal: number;
   /** True once the session has run past `BusinessSettings.maximumSessionHours`. */
   exceedsMaximumSession: boolean;
+  /** How `lineTotal` was arrived at, so a client never has to work it out. */
+  breakdown: SessionPriceBreakdown;
+  /**
+   * When the total next rises, as an instant rather than a duration - a board that polls
+   * every 30 seconds can then tick a countdown locally instead of showing a stale number.
+   * Null under PRORATA, where every passing minute already costs something.
+   */
+  nextChargeAt: Date | null;
 }
 
 export interface PlaySessionWithQuote {

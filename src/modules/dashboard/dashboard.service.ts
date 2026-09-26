@@ -3,6 +3,7 @@ import { PlaySessionModel } from '../play-sessions/playSession.model';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
+import { SessionPricingMode } from '../../common/constants/pricingModes';
 import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { resolveDateRange } from '../../common/utils/dateRange';
@@ -343,22 +344,50 @@ export const dashboardService = {
           totalPlayMinutes: { $sum: '$billedMinutes' },
           longestPlayMinutes: { $max: '$billedMinutes' },
           // A session billed at exactly the minimum is one where the child left early
-          // enough for the floor to bite.
+          // enough for the floor to bite. The floor does not apply to block pricing, so a
+          // short block visit is not one of these - counting it would report a minimum
+          // that was never applied. The `$ifNull` is load-bearing: an aggregation reads
+          // raw BSON, where a session written before pricing modes has no such key at all
+          // and Mongoose's schema default never runs.
           minimumAppliedCount: {
             $sum: {
-              $cond: [{ $lte: ['$billedMinutes', minimumBillableMinutes] }, 1, 0],
-            },
-          },
-          revenue: {
-            $sum: {
-              $round: [
+              $cond: [
                 {
-                  $divide: [
-                    { $multiply: ['$unitPrice', '$billedMinutes'] },
-                    '$rateDurationMinutes',
+                  $and: [
+                    { $lte: ['$billedMinutes', minimumBillableMinutes] },
+                    {
+                      $ne: [
+                        { $ifNull: ['$pricingMode', SessionPricingMode.PRORATA] },
+                        SessionPricingMode.BLOCK_WITH_GRACE,
+                      ],
+                    },
                   ],
                 },
+                1,
                 0,
+              ],
+            },
+          },
+          // Read the amount frozen at checkout rather than recomputing it. Two pricing
+          // models re-expressed in a pipeline would be a third copy of the rules in the
+          // least testable language available; sessions closed before `chargedAmount`
+          // existed were all pro-rata, so the old expression stays as their fallback and
+          // reproduces exactly what this reported before.
+          revenue: {
+            $sum: {
+              $ifNull: [
+                '$chargedAmount',
+                {
+                  $round: [
+                    {
+                      $divide: [
+                        { $multiply: ['$unitPrice', '$billedMinutes'] },
+                        '$rateDurationMinutes',
+                      ],
+                    },
+                    0,
+                  ],
+                },
               ],
             },
           },

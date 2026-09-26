@@ -163,7 +163,7 @@ router.post(
  *       - in: path
  *         name: billNumber
  *         required: true
- *         schema: { type: string, example: "KPA-20260715-0001" }
+ *         schema: { type: string, example: "KPA-20260926-143215" }
  *     responses:
  *       200: { description: Bill details }
  *       404: { description: Bill not found }

@@ -70,9 +70,13 @@ independently of Mongo).
 Each `Bill.items[]` entry snapshots the package's name/duration/price at billing time -
 reports must never recompute from the current `PlayPackage` price.
 
-- **Bill numbers** (`KPA-20260715-0001`): atomic per-business-day counter in
-  `bills/counter.model.ts` + `billNumber.service.ts` via `findOneAndUpdate($inc)`. No
-  transactions involved, so this works against any Mongo topology.
+- **Bill numbers** (`KPA-20260926-143215`): the date and time of payment in the business
+  timezone, never a daily sequence - a counter told every customer holding a receipt how
+  many bills the business had taken that day. The atomic counter in
+  `bills/counter.model.ts` survives, rekeyed per second, purely because
+  `findOneAndUpdate($inc)` makes a same-second collision impossible by construction with
+  no transaction and no retry loop; it appends `-2` only when a second is genuinely hit
+  twice. Counter rows carry a one-day TTL.
 - **Completion is idempotent two ways**: `bill.repository.ts#completeIfDraft` and
   `#transitionIfStatusIn` do an atomic compare-and-set on `status`, so a bill can never
   be completed/cancelled/refunded twice even without any header. On top of that,

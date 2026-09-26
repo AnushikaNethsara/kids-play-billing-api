@@ -116,10 +116,14 @@ export const receiptService = {
       ? DateTime.fromFormat(`${data.bill.date} ${data.bill.time}`, 'yyyy-MM-dd HH:mm')
       : null;
 
-    lines.push(`Bill: ${data.bill.billNumber ?? ''}`);
+    // Wrapped rather than concatenated raw. The number carries a time now, which takes
+    // this line from 23 to 25 of the 32 columns on 58mm paper - still comfortable, but the
+    // prefix is a configurable constant, and a longer one would have run off the edge with
+    // nothing here to catch it.
+    lines.push(...wrapText(`Bill: ${data.bill.billNumber ?? ''}`, width));
     if (paidMoment) lines.push(`Date: ${paidMoment.toFormat('dd/MM/yyyy')}  ${paidMoment.toFormat('hh:mm a')}`);
-    lines.push(`Cashier: ${data.bill.cashierName}`);
-    if (data.bill.parentName) lines.push(`Parent: ${data.bill.parentName}`);
+    lines.push(...wrapText(`Cashier: ${data.bill.cashierName}`, width));
+    if (data.bill.parentName) lines.push(...wrapText(`Parent: ${data.bill.parentName}`, width));
     lines.push(dashLine(width));
 
     for (const item of data.bill.items) {

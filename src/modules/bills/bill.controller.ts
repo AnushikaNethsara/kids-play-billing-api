@@ -13,6 +13,7 @@ import type {
   CompleteBillInput,
   CancelBillInput,
   RefundBillInput,
+  SetTestBillInput,
   ListBillsQuery,
 } from './bill.types';
 
@@ -122,6 +123,17 @@ export const billController = {
     const actor = requireActor(req);
     const bill = await billService.refundBill(req.params.id, req.body as RefundBillInput, actor);
     sendSuccess(res, bill, { message: 'Bill refunded successfully' });
+  },
+
+  async setTestFlag(req: Request, res: Response): Promise<void> {
+    const actor = requireActor(req);
+    const body = req.body as SetTestBillInput;
+    const bill = await billService.setTestFlag(req.params.id, body, actor);
+    sendSuccess(res, bill, {
+      message: body.isTestBill
+        ? 'Bill marked as a test bill and excluded from reporting'
+        : 'Bill restored to normal reporting',
+    });
   },
 
   async receipt(req: Request, res: Response): Promise<void> {

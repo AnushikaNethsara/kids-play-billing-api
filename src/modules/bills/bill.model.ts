@@ -53,6 +53,23 @@ export interface BillDocument {
   refundedAt: Date | null;
   refundedBy: Types.ObjectId | null;
   refundReason: string | null;
+
+  /**
+   * Marks a bill that was rung up to try the system out rather than to take money from a
+   * customer - a staff training run, a printer check, a demo. The bill itself is left
+   * completely intact (it keeps its bill number, its receipt and its place in the list),
+   * but every revenue and dashboard aggregation skips it.
+   *
+   * A flag rather than a status: a test bill still went through DRAFT -> PAID like any
+   * other, and overloading the status would break the lifecycle transitions that the rest
+   * of the money path depends on. It is only settable once the bill is out of DRAFT, so a
+   * bill can never be pre-marked as test while it is still being built at the till.
+   */
+  isTestBill: boolean;
+  testMarkedAt: Date | null;
+  testMarkedBy: Types.ObjectId | null;
+  testReason: string | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -109,6 +126,11 @@ const billSchema = new Schema<BillDocument>(
     refundedAt: { type: Date, default: null },
     refundedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     refundReason: { type: String, default: null },
+
+    isTestBill: { type: Boolean, default: false },
+    testMarkedAt: { type: Date, default: null },
+    testMarkedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    testReason: { type: String, default: null },
   },
   { timestamps: true },
 );
@@ -140,5 +162,9 @@ billSchema.index({ phoneNumber: 1 });
 billSchema.index({ createdAt: -1 });
 // Payment-method breakdown reports.
 billSchema.index({ paymentMethod: 1, paidAt: -1 });
+// Every dashboard aggregation now filters test bills out before anything else, so the
+// flag leads this index rather than trailing the revenue one - almost all bills are
+// real, which makes it the cheapest discriminator to apply first.
+billSchema.index({ isTestBill: 1, status: 1, paidAt: -1 });
 
 export const BillModel = model<BillDocument>('Bill', billSchema);

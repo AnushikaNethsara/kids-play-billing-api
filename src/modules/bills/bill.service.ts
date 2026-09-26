@@ -37,6 +37,7 @@ import type {
   CompleteBillInput,
   CancelBillInput,
   RefundBillInput,
+  SetTestBillInput,
   ListBillsQuery,
 } from './bill.types';
 import type { AuthenticatedUser } from '../../common/types/express';
@@ -86,6 +87,12 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     refundedAt: bill.refundedAt,
     refundedBy: bill.refundedBy ? bill.refundedBy.toString() : null,
     refundReason: bill.refundReason,
+    // Bills predating the flag have no such field, so this normalises to false rather
+    // than leaking undefined out through the API.
+    isTestBill: bill.isTestBill ?? false,
+    testMarkedAt: bill.testMarkedAt ?? null,
+    testMarkedBy: bill.testMarkedBy ? bill.testMarkedBy.toString() : null,
+    testReason: bill.testReason ?? null,
     createdAt: bill.createdAt,
     updatedAt: bill.updatedAt,
   };
@@ -648,6 +655,97 @@ export const billService = {
       before,
       after: toPublicBill(updated),
       metadata: { reason: input.reason },
+    });
+
+    return toPublicBill(updated);
+  },
+
+  /**
+   * Flags a bill as a test - a training run, a printer check, a demo - so that every
+   * revenue figure ignores it. Admin-only, enforced on the route.
+   *
+   * A bill may only be flagged once it has been checked out. While it is still a DRAFT
+   * the transaction is live: the children may still be in the play area, the money has
+   * not been taken, and the totals can still change. Allowing the flag then would mean a
+   * real sale could be pre-marked as a test before anyone could see what it became. Once
+   * the bill has left DRAFT - paid, cancelled or refunded - it is a finished record, and
+   * marking it is a correction to reporting rather than a change to a live transaction.
+   *
+   * Nothing about the money on the bill is touched: the totals, the bill number and the
+   * receipt all stay exactly as they were, so the bill remains auditable as what actually
+   * happened. Only the aggregations change their mind about it.
+   */
+  async setTestFlag(
+    id: string,
+    input: SetTestBillInput,
+    actor: AuthenticatedUser,
+  ): Promise<BillPublic> {
+    const bill = await this.getById(id);
+
+    if (bill.status === BillStatus.DRAFT) {
+      throw new InvalidStateError(
+        'A bill can only be marked as a test bill after it has been checked out - this one is still an open draft',
+      );
+    }
+
+    const isTestBill = input.isTestBill;
+
+    // Idempotent: re-sending the state a bill is already in is a no-op rather than a
+    // second customer-stat adjustment, which would double-count the correction.
+    if ((bill.isTestBill ?? false) === isTestBill) {
+      return toPublicBill(bill);
+    }
+
+    const before = toPublicBill(bill);
+
+    const updated = await billRepository.setTestFlagIfSettled(id, {
+      isTestBill,
+      testMarkedAt: isTestBill ? new Date() : null,
+      testMarkedBy: isTestBill ? new Types.ObjectId(actor.id) : null,
+      testReason: isTestBill ? (input.reason ?? null) : null,
+    });
+
+    if (!updated) {
+      throw new InvalidStateError(
+        'A bill can only be marked as a test bill after it has been checked out - this one is still an open draft',
+      );
+    }
+
+    // The session metrics read PlaySessionModel directly, so the flag has to reach the
+    // sessions too or a test checkout would still count towards play hours and occupancy.
+    const sessionsUpdated = await playSessionRepository.setTestFlagByBillId(updated.id, isTestBill);
+
+    // Completion already added this bill to the parent's visit count and lifetime spend.
+    // Excluding it from business income has to unwind that as well, otherwise the customer
+    // record keeps reporting money the business never took. Keyed off `paidAt` because
+    // that is exactly the condition under which recordVisit ran - a bill cancelled while
+    // still a draft never reached it.
+    if (updated.paidAt && (updated.customerId || updated.phoneNumber)) {
+      const sign = isTestBill ? -1 : 1;
+      await customerService.adjustVisitStats(
+        {
+          id: updated.customerId ? updated.customerId.toString() : undefined,
+          phoneNumber: updated.phoneNumber || undefined,
+        },
+        { visitCount: sign, totalSpent: sign * updated.grandTotal },
+      );
+    }
+
+    await auditLogService.record({
+      userId: actor.id,
+      userName: actor.name,
+      action: isTestBill ? AuditAction.BILL_MARKED_AS_TEST : AuditAction.BILL_UNMARKED_AS_TEST,
+      entityType: AuditEntityType.BILL,
+      entityId: updated.id,
+      before,
+      after: toPublicBill(updated),
+      metadata: {
+        reason: input.reason ?? null,
+        grandTotal: updated.grandTotal,
+        billStatus: updated.status,
+        sessionsUpdated,
+        customerStatsAdjusted: Boolean(updated.paidAt && (updated.customerId || updated.phoneNumber)),
+      },
     });
 
     return toPublicBill(updated);

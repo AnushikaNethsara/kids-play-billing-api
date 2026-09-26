@@ -77,6 +77,11 @@ export const refundBillSchema = z.object({
   reason: z.string().trim().min(1, 'A refund reason is required').max(300),
 });
 
+export const setTestBillSchema = z.object({
+  isTestBill: z.boolean(),
+  reason: z.string().trim().max(300).optional(),
+});
+
 export const listBillsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
@@ -91,6 +96,10 @@ export const listBillsQuerySchema = z.object({
   minTotal: z.coerce.number().int().min(0).optional(),
   maxTotal: z.coerce.number().int().min(0).optional(),
   isTimed: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === 'true')),
+  isTestBill: z
     .enum(['true', 'false'])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === 'true')),

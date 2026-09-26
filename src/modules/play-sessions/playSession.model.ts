@@ -44,6 +44,15 @@ export interface PlaySessionDocument {
   voidedBy: Types.ObjectId | null;
   voidReason: string | null;
 
+  /**
+   * Mirrors `isTestBill` on the bill this session was checked out into. The session
+   * metrics on the dashboard (play hours, occupancy, revenue per play hour) read this
+   * collection directly rather than going through the bill, so the flag has to be
+   * denormalised here or a test checkout would keep showing up in those numbers. It is
+   * only ever written by the bill service, in the same operation that flags the bill.
+   */
+  isTestBill: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -83,6 +92,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     voidedAt: { type: Date, default: null },
     voidedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     voidReason: { type: String, default: null },
+
+    isTestBill: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

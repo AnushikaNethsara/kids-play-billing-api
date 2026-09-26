@@ -56,6 +56,7 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     checkOutCashierName: session.checkOutCashierName,
     voidedAt: session.voidedAt,
     voidReason: session.voidReason,
+    isTestBill: session.isTestBill ?? false,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };

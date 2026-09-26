@@ -47,6 +47,20 @@ export const billRepository = {
     ).exec();
   },
 
+  /**
+   * Compare-and-set on "no longer a draft", the same pattern as completeIfDraft. The rule
+   * that a bill may only be marked as a test after it has been checked out is enforced
+   * here rather than only in the service, so a draft that is completed in the gap between
+   * the service's read and its write cannot end up flagged while it was still open.
+   */
+  async setTestFlagIfSettled(id: string, update: Partial<BillDocument>): Promise<BillHydrated | null> {
+    return BillModel.findOneAndUpdate(
+      { _id: id, status: { $ne: BillStatus.DRAFT } },
+      { $set: update },
+      { new: true },
+    ).exec();
+  },
+
   async list(
     filter: ListBillsQuery,
   ): Promise<{ bills: BillHydrated[]; total: number }> {
@@ -74,6 +88,11 @@ export const billRepository = {
       // Bills are never a mix of timed and flat lines, so testing the array field is
       // unambiguous here.
       mongoFilter['items.playSessionId'] = filter.isTimed ? { $ne: null } : null;
+    }
+    if (filter.isTestBill !== undefined) {
+      // `$ne: true` rather than `false`: every bill written before this flag existed has
+      // no such field at all, and matching on `false` would silently hide all of them.
+      mongoFilter.isTestBill = filter.isTestBill ? true : { $ne: true };
     }
     if (filter.minTotal !== undefined || filter.maxTotal !== undefined) {
       const grandTotal: Record<string, number> = {};

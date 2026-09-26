@@ -69,6 +69,12 @@ export interface RefundBillInput {
   reason: string;
 }
 
+export interface SetTestBillInput {
+  isTestBill: boolean;
+  /** Why this was a test. Optional when clearing the flag, since there is nothing to explain. */
+  reason?: string;
+}
+
 export interface BillItemPublic {
   childName: string;
   playPackageId: string;
@@ -111,6 +117,11 @@ export interface BillPublic {
   refundedAt: Date | null;
   refundedBy: string | null;
   refundReason: string | null;
+  /** Excluded from every dashboard figure and from the customer's lifetime spend. */
+  isTestBill: boolean;
+  testMarkedAt: Date | null;
+  testMarkedBy: string | null;
+  testReason: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -134,5 +145,10 @@ export interface ListBillsQuery {
    * the other matters. A bill is never a mix of the two.
    */
   isTimed?: boolean;
+  /**
+   * Omitted shows both kinds, which is what the bills screen wants - a test bill is still
+   * a real record an admin needs to be able to find. Only the dashboard passes `false`.
+   */
+  isTestBill?: boolean;
   sort?: 'newest' | 'oldest' | 'total_desc' | 'total_asc';
 }

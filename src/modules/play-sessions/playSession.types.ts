@@ -49,6 +49,8 @@ export interface PlaySessionPublic {
   checkOutCashierName: string | null;
   voidedAt: Date | null;
   voidReason: string | null;
+  /** True once the bill this session was checked out into was marked as a test bill. */
+  isTestBill: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

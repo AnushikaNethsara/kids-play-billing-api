@@ -18,6 +18,14 @@ export interface ReceiptItem {
   billedMinutes?: number;
   /** Human-readable elapsed time, e.g. "1h 17m". */
   billedDuration?: string;
+  /**
+   * Present only on a block-priced line. Pre-formatted for the same reason the times are:
+   * the mobile app reprints from a cached copy and must never work the split out itself.
+   * `blockSummary` reads "2 x 1h + 11m", or "1 x 1h (10m free)" while grace is covering it.
+   */
+  blockSummary?: string;
+  overageMinutes?: number;
+  overageAmount?: number;
 }
 
 export interface ReceiptData {

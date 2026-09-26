@@ -4,6 +4,7 @@ import { app } from './helpers/testApp';
 import { createAdmin, createCashier, createPlayPackage } from './helpers/factories';
 import { BusinessSettingsModel } from '../src/modules/settings/settings.model';
 import { PlaySessionModel } from '../src/modules/play-sessions/playSession.model';
+import { SessionPricingMode } from '../src/common/constants/pricingModes';
 
 const API = '/api/v1';
 
@@ -592,5 +593,291 @@ describe('play sessions', () => {
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual([]);
     });
+  });
+});
+
+/**
+ * "Pay for the first hour, then extra time" end to end.
+ *
+ * Every boundary case here pins BOTH check-in and check-out to explicit timestamps rather
+ * than leaning on the wall clock. Elapsed minutes are rounded up, so a few hundred
+ * milliseconds of drift turns 70 minutes into 71 and flips the assertion by a whole
+ * grace step - which would make this suite flaky in exactly the place it matters most.
+ */
+describe('block-with-grace pricing', () => {
+  /** LKR 600.00 buys the first hour, then 10 minutes of grace after each completed hour. */
+  async function createBlockPackage() {
+    return createPlayPackage({
+      name: '1 Hour Pass',
+      durationMinutes: 60,
+      price: 60_000,
+      pricingMode: SessionPricingMode.BLOCK_WITH_GRACE,
+      graceMinutes: 10,
+    });
+  }
+
+  /** A check-in far enough back that any exit time under test is still in the past. */
+  const CHECK_IN_AT = () => minutesAgo(300);
+
+  function exitAfter(checkInAt: string, minutes: number): string {
+    return new Date(new Date(checkInAt).getTime() + minutes * 60_000).toISOString();
+  }
+
+  async function checkOut(accessToken: string, ticketCode: string, checkOutAt: string) {
+    return request(app)
+      .post(`${API}/bills/from-sessions`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ ticketCodes: [ticketCode], checkOutAt });
+  }
+
+  it('snapshots the pricing rule onto the session at check-in', async () => {
+    const { accessToken } = await createCashier();
+    const pkg = await createBlockPackage();
+
+    const res = await checkIn(accessToken, pkg.id);
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.pricingMode).toBe('BLOCK_WITH_GRACE');
+    expect(res.body.data.graceMinutes).toBe(10);
+    expect(res.body.data.unitPrice).toBe(60_000);
+    expect(res.body.data.rateDurationMinutes).toBe(60);
+  });
+
+  it.each([
+    [20, 60_000],
+    [60, 60_000],
+    [70, 60_000],
+    [71, 71_000],
+    [90, 90_000],
+    [120, 120_000],
+    [130, 120_000],
+    [131, 131_000],
+  ])('bills a %i-minute visit at %i', async (minutes, expected) => {
+    const { accessToken } = await createCashier();
+    const pkg = await createBlockPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt });
+    const res = await checkOut(accessToken, session.body.data.ticketCode, exitAfter(checkInAt, minutes));
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.subtotal).toBe(expected);
+    expect(res.body.data.items[0].billedMinutes).toBe(minutes);
+  });
+
+  it('returns the split on the bill item so the receipt never recomputes it', async () => {
+    const { accessToken } = await createCashier();
+    const pkg = await createBlockPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt });
+    const res = await checkOut(accessToken, session.body.data.ticketCode, exitAfter(checkInAt, 131));
+
+    const item = res.body.data.items[0];
+    expect(item.pricingMode).toBe('BLOCK_WITH_GRACE');
+    expect(item.graceMinutes).toBe(10);
+    expect(item.blocksCharged).toBe(2);
+    expect(item.blockSubtotal).toBe(120_000);
+    expect(item.overageMinutes).toBe(11);
+    expect(item.overageAmount).toBe(11_000);
+    expect(item.graceApplied).toBe(false);
+    // The derived split must always reconcile against the stored authority.
+    expect(item.blockSubtotal + item.overageAmount).toBe(item.lineTotal);
+  });
+
+  it('quotes a live session with a countdown to the next charge', async () => {
+    const { accessToken } = await createCashier();
+    const pkg = await createBlockPackage();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt: minutesAgo(65) });
+    const res = await request(app)
+      .get(`${API}/play-sessions/ticket/${session.body.data.ticketCode}`)
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.quote.lineTotal).toBe(60_000);
+    expect(res.body.data.quote.breakdown.graceApplied).toBe(true);
+    expect(res.body.data.quote.breakdown.inExtraTime).toBe(false);
+    expect(res.body.data.quote.nextChargeAt).not.toBeNull();
+  });
+
+  it('does not apply the minimum billable time, which would overstate play time', async () => {
+    // The block fee is already the floor, so the money is the same either way - but
+    // billedMinutes is what the dashboard sums and what the receipt prints.
+    const { accessToken } = await createCashier();
+    await setMinimumBillableMinutes(30);
+    const pkg = await createBlockPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt });
+    const res = await checkOut(accessToken, session.body.data.ticketCode, exitAfter(checkInAt, 5));
+
+    expect(res.body.data.subtotal).toBe(60_000);
+    expect(res.body.data.items[0].billedMinutes).toBe(5);
+  });
+
+  it('prices from the session snapshot even after the package is switched to pro-rata', async () => {
+    const { accessToken } = await createCashier();
+    const { accessToken: adminToken } = await createAdmin();
+    const pkg = await createBlockPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt });
+
+    await request(app)
+      .patch(`${API}/play-packages/${pkg.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ pricingMode: 'PRORATA' });
+
+    const res = await checkOut(accessToken, session.body.data.ticketCode, exitAfter(checkInAt, 20));
+
+    // Still a full block. Pro-rata would have charged 20_000.
+    expect(res.body.data.subtotal).toBe(60_000);
+    expect(res.body.data.items[0].pricingMode).toBe('BLOCK_WITH_GRACE');
+  });
+
+  it('bills a block child and a pro-rata child on one visit, each by its own rule', async () => {
+    const { accessToken } = await createCashier();
+    const blockPkg = await createBlockPackage();
+    const prorataPkg = await createHourlyPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const blockSession = await checkIn(accessToken, blockPkg.id, { checkInAt, childName: 'Kasun' });
+    const prorataSession = await checkIn(accessToken, prorataPkg.id, { checkInAt, childName: 'Amaya' });
+
+    const res = await request(app)
+      .post(`${API}/bills/from-sessions`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({
+        ticketCodes: [blockSession.body.data.ticketCode, prorataSession.body.data.ticketCode],
+        checkOutAt: exitAfter(checkInAt, 90),
+      });
+
+    expect(res.status).toBe(201);
+    const [block, prorata] = res.body.data.items;
+    expect(block.lineTotal).toBe(90_000); // one block + 30 chargeable minutes
+    expect(prorata.lineTotal).toBe(150_000); // 90 min of a LKR 1000.00/hour rate
+    expect(prorata.pricingMode).toBe('PRORATA');
+    expect(res.body.data.subtotal).toBe(240_000);
+  });
+
+  it('prints the split on the receipt instead of a per-minute rate', async () => {
+    const { accessToken } = await createCashier();
+    const pkg = await createBlockPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt });
+    const bill = await checkOut(accessToken, session.body.data.ticketCode, exitAfter(checkInAt, 131));
+    await request(app)
+      .post(`${API}/bills/${bill.body.data.id}/complete`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ paymentMethod: 'CASH' });
+
+    const res = await request(app)
+      .get(`${API}/bills/${bill.body.data.id}/receipt/text`)
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('2 x 1h + 11m');
+    expect(res.text).toContain('incl. extra 11m');
+    // The pro-rata form would read as a per-minute rate and invite multiplying it out.
+    expect(res.text).not.toContain('/60m');
+    // 58mm paper is 32 columns; a line over that wraps badly on a thermal printer.
+    for (const line of res.text.split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(32);
+    }
+  });
+
+  it('freezes the charged amount on the session and clears it if the bill is cancelled', async () => {
+    // The dashboard sums chargedAmount, so a reopened ticket that kept one would report
+    // revenue that was reversed - and double-count it once the child is billed again.
+    const { accessToken } = await createCashier();
+    const pkg = await createBlockPackage();
+    const checkInAt = CHECK_IN_AT();
+
+    const session = await checkIn(accessToken, pkg.id, { checkInAt });
+    const bill = await checkOut(accessToken, session.body.data.ticketCode, exitAfter(checkInAt, 90));
+
+    const closed = await PlaySessionModel.findOne({ ticketCode: session.body.data.ticketCode });
+    expect(closed?.chargedAmount).toBe(90_000);
+
+    await request(app)
+      .post(`${API}/bills/${bill.body.data.id}/cancel`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ reason: 'scanned the wrong ticket' });
+
+    const reopened = await PlaySessionModel.findOne({ ticketCode: session.body.data.ticketCode });
+    expect(reopened?.status).toBe('ACTIVE');
+    expect(reopened?.billedMinutes).toBeNull();
+    expect(reopened?.chargedAmount).toBeNull();
+  });
+});
+
+describe('block pricing configuration', () => {
+  it('defaults an existing-shaped package to pro-rata with no grace', async () => {
+    const { accessToken } = await createAdmin();
+
+    const res = await request(app)
+      .post(`${API}/play-packages`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ name: 'Plain', durationMinutes: 60, price: 60_000 });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.pricingMode).toBe('PRORATA');
+    expect(res.body.data.graceMinutes).toBe(0);
+  });
+
+  it('rejects a grace that is not shorter than the block', async () => {
+    const { accessToken } = await createAdmin();
+
+    const res = await request(app)
+      .post(`${API}/play-packages`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({
+        name: 'Unreachable',
+        durationMinutes: 60,
+        price: 60_000,
+        pricingMode: 'BLOCK_WITH_GRACE',
+        graceMinutes: 60,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects shortening a block below a grace that was already valid', async () => {
+    // The check has to run against the merged package: this patch is unremarkable on its
+    // own, and only conflicts with the grace already stored.
+    const { accessToken } = await createAdmin();
+    const pkg = await createPlayPackage({
+      durationMinutes: 60,
+      pricingMode: SessionPricingMode.BLOCK_WITH_GRACE,
+      graceMinutes: 30,
+    });
+
+    const res = await request(app)
+      .patch(`${API}/play-packages/${pkg.id}`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ durationMinutes: 10 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('audits a switch of pricing mode as a price change', async () => {
+    const { accessToken } = await createAdmin();
+    const pkg = await createPlayPackage({ durationMinutes: 60, price: 60_000 });
+
+    await request(app)
+      .patch(`${API}/play-packages/${pkg.id}`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ pricingMode: 'BLOCK_WITH_GRACE', graceMinutes: 10 });
+
+    const logs = await request(app)
+      .get(`${API}/audit-logs?entityType=PLAY_PACKAGE`)
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    const actions = logs.body.data.map((entry: { action: string }) => entry.action);
+    expect(actions).toContain('PACKAGE_PRICE_CHANGED');
   });
 });

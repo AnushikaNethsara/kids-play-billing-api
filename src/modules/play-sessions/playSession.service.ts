@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { playSessionRepository } from './playSession.repository';
 import { playPackageRepository } from '../play-packages/playPackage.repository';
+import { resolveGraceMinutes, resolvePricingMode } from '../play-packages/playPackage.model';
 import { settingsService } from '../settings/settings.service';
 import {
   resolveMaximumSessionHours,
@@ -9,12 +10,12 @@ import {
 import { InvalidPlayPackageError } from '../bills/bill.errors';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
-import { calculateBilledMinutes, calculateSessionLineTotal } from '../bills/billCalculator';
+import { priceSessionForPeriod } from '../bills/billCalculator';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { UserRole } from '../../common/constants/roles';
 import { AuthorizationError, InvalidStateError, NotFoundError, ValidationError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
-import type { PlaySessionHydrated } from './playSession.model';
+import { resolveSessionRate, type PlaySessionHydrated } from './playSession.model';
 import type {
   CheckInInput,
   CheckInResult,
@@ -32,6 +33,7 @@ import type { AuthenticatedUser } from '../../common/types/express';
  */
 const MAX_CLOCK_SKEW_MINUTES = 10;
 const MINUTES_PER_HOUR = 60;
+const MILLISECONDS_PER_MINUTE = 60_000;
 
 export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic {
   return {
@@ -43,12 +45,15 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     packageName: session.packageName,
     rateDurationMinutes: session.rateDurationMinutes,
     unitPrice: session.unitPrice,
+    pricingMode: resolveSessionRate(session).pricingMode,
+    graceMinutes: resolveSessionRate(session).graceMinutes,
     customerId: session.customerId ? session.customerId.toString() : null,
     parentName: session.parentName,
     phoneNumber: session.phoneNumber,
     checkInAt: session.checkInAt,
     checkOutAt: session.checkOutAt,
     billedMinutes: session.billedMinutes,
+    chargedAmount: session.chargedAmount ?? null,
     billId: session.billId ? session.billId.toString() : null,
     checkInCashierId: session.checkInCashierId.toString(),
     checkInCashierName: session.checkInCashierName,
@@ -67,29 +72,36 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
  * and by the authoritative calculation inside checkout, so the two can never drift apart.
  */
 export function quoteSession(
-  session: Pick<PlaySessionHydrated, 'checkInAt' | 'unitPrice' | 'rateDurationMinutes'>,
+  session: Pick<
+    PlaySessionHydrated,
+    'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes'
+  >,
   asOf: Date,
   settings: { minimumBillableMinutes: number; maximumSessionHours: number },
 ): SessionQuote {
-  const { elapsedMinutes, billedMinutes, minimumApplied } = calculateBilledMinutes({
+  const { elapsedMinutes, billedMinutes, minimumApplied, breakdown } = priceSessionForPeriod({
     checkInAt: session.checkInAt,
     checkOutAt: asOf,
+    rate: resolveSessionRate(session),
     minimumBillableMinutes: settings.minimumBillableMinutes,
   });
 
-  const lineTotal = calculateSessionLineTotal({
-    unitPrice: session.unitPrice,
-    rateDurationMinutes: session.rateDurationMinutes,
-    billedMinutes,
-  });
+  // An absolute instant rather than a duration, so a board polling every 30 seconds can
+  // tick the countdown down locally instead of showing a number that is half a minute old.
+  const nextChargeAt =
+    breakdown.minutesUntilNextCharge === null
+      ? null
+      : new Date(asOf.getTime() + breakdown.minutesUntilNextCharge * MILLISECONDS_PER_MINUTE);
 
   return {
     asOf,
     elapsedMinutes,
     billedMinutes,
     minimumApplied,
-    lineTotal,
+    lineTotal: breakdown.lineTotal,
     exceedsMaximumSession: elapsedMinutes > settings.maximumSessionHours * MINUTES_PER_HOUR,
+    breakdown,
+    nextChargeAt,
   };
 }
 
@@ -116,6 +128,15 @@ export const playSessionService = {
     const now = new Date();
     const checkInAt = this.resolveCheckInAt(input.checkInAt, now, resolveMaximumSessionHours(settings));
 
+    // Read through the same resolver the session uses, so the snapshot is already
+    // normalised (grace 0 under PRORATA) rather than a raw copy of the package.
+    const packageRate = resolveSessionRate({
+      unitPrice: pkg.price,
+      rateDurationMinutes: pkg.durationMinutes,
+      pricingMode: resolvePricingMode(pkg),
+      graceMinutes: resolveGraceMinutes(pkg),
+    });
+
     try {
       const session = await playSessionRepository.create({
         ticketCode: input.ticketCode,
@@ -125,6 +146,11 @@ export const playSessionService = {
         packageName: pkg.name,
         rateDurationMinutes: pkg.durationMinutes,
         unitPrice: pkg.price,
+        pricingMode: packageRate.pricingMode,
+        // Normalised at snapshot time: the package keeps its grace value so flipping the
+        // mode back does not lose it, but a PRORATA session carries 0, so even a client
+        // that forgets to check the mode cannot misprice from this snapshot.
+        graceMinutes: packageRate.graceMinutes,
         customerId: input.customer?.customerId ? new Types.ObjectId(input.customer.customerId) : null,
         parentName: input.customer?.parentName ?? '',
         phoneNumber: input.customer?.phoneNumber ?? '',

@@ -93,10 +93,20 @@ router.get('/', validate({ query: listBillsQuerySchema }), asyncHandler(billCont
  *     summary: Check out scanned tickets into a draft bill priced on time spent
  *     description: >
  *       The checkout half of QR ticketing. Each ticket is claimed atomically from ACTIVE,
- *       priced pro-rata from the package rate snapshotted at check-in
- *       (`unitPrice x billedMinutes / durationMinutes`, floored at
- *       `minimumBillableMinutes`), and attached to a new DRAFT bill. Take payment with
- *       `POST /bills/{id}/complete` exactly as for any other bill.
+ *       priced from the rate snapshotted onto the session at check-in, and attached to a
+ *       new DRAFT bill. Take payment with `POST /bills/{id}/complete` exactly as for any
+ *       other bill.
+ *
+ *       Which rule applies comes from the session's own `pricingMode`, never from the
+ *       package as it stands now:
+ *
+ *       - `PRORATA` - `unitPrice x billedMinutes / durationMinutes`, floored at
+ *         `minimumBillableMinutes`.
+ *       - `BLOCK_WITH_GRACE` - every started block costs `unitPrice` in full (so a visit
+ *         shorter than one block still pays for one), and after each completed block
+ *         `graceMinutes` are forgiven. Once that grace is exceeded the whole remainder is
+ *         charged, counted from the start of the block rather than the end of the grace.
+ *         The minimum does not apply here; the block fee already is the floor.
  *
  *       Tickets are identified by their printed code rather than by id so a cashier app
  *       that has been offline since check-in can compose this request without a round

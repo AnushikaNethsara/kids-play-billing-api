@@ -1,6 +1,12 @@
 import { Types } from 'mongoose';
 import { playPackageRepository } from './playPackage.repository';
-import type { PlayPackageHydrated } from './playPackage.model';
+import {
+  resolveGraceMinutes,
+  resolvePricingMode,
+  type PlayPackageHydrated,
+} from './playPackage.model';
+import { assertPricingConsistent } from './playPackage.validation';
+import { DEFAULT_SESSION_PRICING_MODE } from '../../common/constants/pricingModes';
 import type {
   CreatePlayPackageInput,
   UpdatePlayPackageInput,
@@ -20,6 +26,8 @@ function toPublic(pkg: PlayPackageHydrated): PlayPackagePublic {
     name: pkg.name,
     durationMinutes: pkg.durationMinutes,
     price: pkg.price,
+    pricingMode: resolvePricingMode(pkg),
+    graceMinutes: resolveGraceMinutes(pkg),
     isActive: pkg.isActive,
     description: pkg.description,
     sortOrder: pkg.sortOrder,
@@ -35,10 +43,16 @@ async function isPackageUsedInBills(packageId: string): Promise<boolean> {
 
 export const playPackageService = {
   async create(input: CreatePlayPackageInput, actor: AuthenticatedUser): Promise<PlayPackagePublic> {
+    const pricingMode = input.pricingMode ?? DEFAULT_SESSION_PRICING_MODE;
+    const graceMinutes = input.graceMinutes ?? 0;
+    assertPricingConsistent({ pricingMode, durationMinutes: input.durationMinutes, graceMinutes });
+
     const pkg = await playPackageRepository.create({
       name: input.name,
       durationMinutes: input.durationMinutes,
       price: input.price,
+      pricingMode,
+      graceMinutes,
       description: input.description ?? '',
       sortOrder: input.sortOrder ?? 0,
       createdBy: actor.id,
@@ -88,21 +102,40 @@ export const playPackageService = {
     if (!pkg) throw new NotFoundError('Play package not found');
 
     const before = toPublic(pkg);
-    const priceChanged = input.price !== undefined && input.price !== pkg.price;
+
+    // Everything that moves what a visit costs is a price change, not a routine edit.
+    // `durationMinutes` always was one - it is the rate denominator - but was only ever
+    // logged as PACKAGE_UPDATED; the pricing mode and the grace are the same kind of
+    // change, so all four are audited together now.
+    const pricingChanged =
+      (input.price !== undefined && input.price !== pkg.price) ||
+      (input.durationMinutes !== undefined && input.durationMinutes !== pkg.durationMinutes) ||
+      (input.pricingMode !== undefined && input.pricingMode !== resolvePricingMode(pkg)) ||
+      (input.graceMinutes !== undefined && input.graceMinutes !== resolveGraceMinutes(pkg));
 
     if (input.name !== undefined) pkg.name = input.name;
     if (input.durationMinutes !== undefined) pkg.durationMinutes = input.durationMinutes;
     if (input.price !== undefined) pkg.price = input.price;
+    if (input.pricingMode !== undefined) pkg.pricingMode = input.pricingMode;
+    if (input.graceMinutes !== undefined) pkg.graceMinutes = input.graceMinutes;
     if (input.description !== undefined) pkg.description = input.description;
     if (input.sortOrder !== undefined) pkg.sortOrder = input.sortOrder;
     pkg.updatedBy = new Types.ObjectId(actor.id);
+
+    // Checked against the merged document, not the patch: lowering durationMinutes alone
+    // can invalidate a grace that was fine when it was saved.
+    assertPricingConsistent({
+      pricingMode: resolvePricingMode(pkg),
+      durationMinutes: pkg.durationMinutes,
+      graceMinutes: resolveGraceMinutes(pkg),
+    });
 
     await pkg.save();
 
     await auditLogService.record({
       userId: actor.id,
       userName: actor.name,
-      action: priceChanged ? AuditAction.PACKAGE_PRICE_CHANGED : AuditAction.PACKAGE_UPDATED,
+      action: pricingChanged ? AuditAction.PACKAGE_PRICE_CHANGED : AuditAction.PACKAGE_UPDATED,
       entityType: AuditEntityType.PLAY_PACKAGE,
       entityId: pkg.id,
       before,

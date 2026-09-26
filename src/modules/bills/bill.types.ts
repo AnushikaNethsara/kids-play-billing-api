@@ -1,4 +1,5 @@
 import type { BillStatus, DiscountType } from '../../common/constants/billStatus';
+import type { SessionPricingMode } from '../../common/constants/pricingModes';
 import type { PaymentMethod } from '../../common/constants/paymentMethods';
 
 export interface CreateBillItemInput {
@@ -88,6 +89,18 @@ export interface BillItemPublic {
   checkInAt: Date | null;
   checkOutAt: Date | null;
   billedMinutes: number | null;
+  /** The rule this line was billed under. Always PRORATA on a flat-price line. */
+  pricingMode: SessionPricingMode;
+  graceMinutes: number;
+  /**
+   * How `lineTotal` splits, derived server-side from the line's own snapshot so no client
+   * recomputes it. Null on anything that is not a block-priced session line.
+   */
+  blocksCharged: number | null;
+  blockSubtotal: number | null;
+  overageMinutes: number | null;
+  overageAmount: number | null;
+  graceApplied: boolean | null;
 }
 
 export interface BillPublic {

@@ -1,5 +1,9 @@
 import { Schema, model, type HydratedDocument, Types } from 'mongoose';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
+import {
+  DEFAULT_SESSION_PRICING_MODE,
+  SessionPricingMode,
+} from '../../common/constants/pricingModes';
 
 export interface PlaySessionDocument {
   /**
@@ -12,12 +16,20 @@ export interface PlaySessionDocument {
   childName: string;
 
   // Rate snapshot, taken at check-in. A later price change must never rewrite what an
-  // already-playing child is charged - same discipline as BillItemSubdocument.
+  // already-playing child is charged - same discipline as BillItemSubdocument. These five
+  // fields are the complete input to pricing: a checkout needs nothing else, which is what
+  // lets the cashier app quote a session correctly with no network.
   playPackageId: Types.ObjectId;
   packageName: string;
-  /** The rate denominator: `unitPrice` buys this many minutes of play. */
+  /**
+   * Under PRORATA the rate denominator: `unitPrice` buys this many minutes of play. Under
+   * BLOCK_WITH_GRACE the block length: each started block costs `unitPrice` in full.
+   */
   rateDurationMinutes: number;
   unitPrice: number;
+  pricingMode: SessionPricingMode;
+  /** Always 0 on a PRORATA session, where grace means nothing. */
+  graceMinutes: number;
 
   customerId: Types.ObjectId | null;
   parentName: string;
@@ -33,6 +45,15 @@ export interface PlaySessionDocument {
   checkOutAt: Date | null;
   /** Frozen at checkout so the bill and the session can never disagree afterwards. */
   billedMinutes: number | null;
+  /**
+   * The line total this session was billed at, frozen at checkout beside `billedMinutes`.
+   *
+   * Stored rather than recomputed because the dashboard's session metrics read this
+   * collection directly, and re-expressing two pricing models in an aggregation pipeline
+   * would be a third copy of the rules in the least testable language available. Null on
+   * every session closed before this existed, which the pipeline falls back for.
+   */
+  chargedAmount: number | null;
   billId: Types.ObjectId | null;
 
   checkInCashierId: Types.ObjectId;
@@ -73,6 +94,12 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     packageName: { type: String, required: true },
     rateDurationMinutes: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
+    pricingMode: {
+      type: String,
+      enum: Object.values(SessionPricingMode),
+      default: DEFAULT_SESSION_PRICING_MODE,
+    },
+    graceMinutes: { type: Number, default: 0, min: 0 },
 
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', default: null },
     parentName: { type: String, default: '' },
@@ -82,6 +109,7 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     checkInRecordedAt: { type: Date, required: true },
     checkOutAt: { type: Date, default: null },
     billedMinutes: { type: Number, default: null },
+    chargedAmount: { type: Number, default: null },
     billId: { type: Schema.Types.ObjectId, ref: 'Bill', default: null },
 
     checkInCashierId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -109,5 +137,38 @@ playSessionSchema.index({ phoneNumber: 1 });
 playSessionSchema.index({ checkInAt: -1 });
 // Reopening sessions when their bill is cancelled.
 playSessionSchema.index({ billId: 1 });
+
+/**
+ * The session's rate snapshot, read defensively, in the shape `priceSession` expects.
+ *
+ * Sessions opened before pricing modes existed carry neither field. Mongoose fills the
+ * schema default on hydration, but this must also hold for a `.lean()` read, where the
+ * raw BSON simply has no such key - so the fallback is applied here rather than trusted.
+ */
+export function resolveSessionRate(
+  session: Pick<PlaySessionDocument, 'unitPrice' | 'rateDurationMinutes'> &
+    Partial<Pick<PlaySessionDocument, 'pricingMode' | 'graceMinutes'>>,
+): {
+  pricingMode: SessionPricingMode;
+  unitPrice: number;
+  rateDurationMinutes: number;
+  graceMinutes: number;
+} {
+  const pricingMode =
+    session.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
+      ? SessionPricingMode.BLOCK_WITH_GRACE
+      : DEFAULT_SESSION_PRICING_MODE;
+
+  return {
+    pricingMode,
+    unitPrice: session.unitPrice,
+    rateDurationMinutes: session.rateDurationMinutes,
+    // Grace is meaningless under PRORATA, so it is never carried into one.
+    graceMinutes:
+      pricingMode === SessionPricingMode.BLOCK_WITH_GRACE && Number.isFinite(session.graceMinutes)
+        ? Math.max(session.graceMinutes as number, 0)
+        : 0,
+  };
+}
 
 export const PlaySessionModel = model<PlaySessionDocument>('PlaySession', playSessionSchema);

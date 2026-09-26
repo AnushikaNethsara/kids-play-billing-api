@@ -1,5 +1,9 @@
 import { Schema, model, type HydratedDocument, Types } from 'mongoose';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
+import {
+  DEFAULT_SESSION_PRICING_MODE,
+  SessionPricingMode,
+} from '../../common/constants/pricingModes';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 
 export interface BillItemSubdocument {
@@ -25,6 +29,19 @@ export interface BillItemSubdocument {
   checkInAt: Date | null;
   checkOutAt: Date | null;
   billedMinutes: number | null;
+
+  /**
+   * The pricing rule this line was billed under, snapshotted with the rate.
+   *
+   * Only these two inputs are stored, not the resulting split: `lineTotal` stays the sole
+   * authority on the money, and a stored split that disagreed with it would be a new way
+   * for a bill to contradict itself. Because every input is snapshotted, the split is
+   * reproduced exactly whenever it is needed for display - see `toPublicItem`.
+   *
+   * A flat-price line is always PRORATA with no grace, whatever its package says now.
+   */
+  pricingMode: SessionPricingMode;
+  graceMinutes: number;
 }
 
 export interface BillDocument {
@@ -91,6 +108,12 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     checkInAt: { type: Date, default: null },
     checkOutAt: { type: Date, default: null },
     billedMinutes: { type: Number, default: null },
+    pricingMode: {
+      type: String,
+      enum: Object.values(SessionPricingMode),
+      default: DEFAULT_SESSION_PRICING_MODE,
+    },
+    graceMinutes: { type: Number, default: 0 },
   },
   { _id: false },
 );

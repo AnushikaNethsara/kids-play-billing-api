@@ -2,6 +2,8 @@ import { DateTime } from 'luxon';
 import type { BillHydrated } from './bill.model';
 import type { BusinessSettingsHydrated } from '../settings/settings.model';
 import type { ReceiptData, ReceiptItem } from './receipt.types';
+import { priceSession } from './billCalculator';
+import { SessionPricingMode } from '../../common/constants/pricingModes';
 import { formatMoney } from '../../common/utils/money';
 import {
   centerText,
@@ -55,6 +57,33 @@ export const receiptService = {
               .toFormat('hh:mm a');
           }
 
+          // A block line's total is blocks + overage, not a rate scaled to the time
+          // played, so the pro-rata "@price/duration" line below would misdescribe it.
+          if (
+            item.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE &&
+            item.billedMinutes !== null &&
+            item.billedMinutes !== undefined
+          ) {
+            const breakdown = priceSession(
+              {
+                pricingMode: SessionPricingMode.BLOCK_WITH_GRACE,
+                unitPrice: item.unitPrice,
+                rateDurationMinutes: item.durationMinutes,
+                graceMinutes: item.graceMinutes ?? 0,
+              },
+              item.billedMinutes,
+            );
+
+            const blockLabel = `${breakdown.blocksCharged} x ${formatDuration(item.durationMinutes)}`;
+            receiptItem.blockSummary = breakdown.overageAmount > 0
+              ? `${blockLabel} + ${formatDuration(breakdown.overageMinutes)}`
+              : breakdown.graceApplied
+                ? `${blockLabel} (${formatDuration(item.graceMinutes ?? 0)} free)`
+                : blockLabel;
+            receiptItem.overageMinutes = breakdown.overageMinutes;
+            receiptItem.overageAmount = breakdown.overageAmount;
+          }
+
           return receiptItem;
         }),
         subtotal: bill.subtotal,
@@ -105,7 +134,19 @@ export const receiptService = {
         lines.push(
           twoColumnLine(
             `Time: ${item.billedDuration}`,
-            `@${formatMoney(item.unitPrice)}/${item.durationMinutes}m`,
+            // A block line shows how the total was made up. The pro-rata form would read
+            // as a per-minute rate and invite the parent to multiply it out, which is not
+            // how a block line is priced.
+            item.blockSummary ?? `@${formatMoney(item.unitPrice)}/${item.durationMinutes}m`,
+            width,
+          ),
+        );
+      }
+      if (item.overageAmount) {
+        lines.push(
+          twoColumnLine(
+            `  incl. extra ${formatDuration(item.overageMinutes ?? 0)}`,
+            formatMoney(item.overageAmount),
             width,
           ),
         );

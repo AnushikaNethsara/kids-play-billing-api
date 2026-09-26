@@ -38,6 +38,8 @@ export const playSessionRepository = {
     update: {
       checkOutAt: Date;
       billedMinutes: number;
+      /** Frozen in the same atomic write as billedMinutes, so the two can never disagree. */
+      chargedAmount: number;
       checkOutCashierId: Types.ObjectId;
       checkOutCashierName: string;
     },
@@ -62,6 +64,10 @@ export const playSessionRepository = {
           status: PlaySessionStatus.ACTIVE,
           checkOutAt: null,
           billedMinutes: null,
+          // Must be cleared with billedMinutes. The dashboard sums chargedAmount, so a
+          // session left carrying one after its bill was cancelled would keep reporting
+          // revenue that was reversed - and would double-count once it is billed again.
+          chargedAmount: null,
           billId: null,
           checkOutCashierId: null,
           checkOutCashierName: null,

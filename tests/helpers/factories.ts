@@ -3,6 +3,7 @@ import { UserModel } from '../../src/modules/users/user.model';
 import { PlayPackageModel } from '../../src/modules/play-packages/playPackage.model';
 import { authService } from '../../src/modules/auth/auth.service';
 import { UserRole } from '../../src/common/constants/roles';
+import { SessionPricingMode } from '../../src/common/constants/pricingModes';
 
 const TEST_PASSWORD = 'TestPassword123!';
 
@@ -37,12 +38,16 @@ export async function createPlayPackage(overrides: Partial<{
   name: string;
   durationMinutes: number;
   price: number;
+  pricingMode: SessionPricingMode;
+  graceMinutes: number;
   isActive: boolean;
 }> = {}) {
   return PlayPackageModel.create({
     name: overrides.name ?? '1 Hour',
     durationMinutes: overrides.durationMinutes ?? 60,
     price: overrides.price ?? 80000,
+    pricingMode: overrides.pricingMode ?? SessionPricingMode.PRORATA,
+    graceMinutes: overrides.graceMinutes ?? 0,
     isActive: overrides.isActive ?? true,
     description: '',
     sortOrder: 0,

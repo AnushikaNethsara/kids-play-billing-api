@@ -469,7 +469,7 @@ describe('play sessions', () => {
 
       expect(paid.status).toBe(200);
       expect(paid.body.data.bill.status).toBe('PAID');
-      expect(paid.body.data.bill.billNumber).toMatch(/^KPA-\d{8}-\d{4}$/);
+      expect(paid.body.data.bill.billNumber).toMatch(/^KPA-\d{8}-\d{6}$/);
 
       const receipt = await request(app)
         .get(`${API}/bills/${draft.body.data.id}/receipt/text`)

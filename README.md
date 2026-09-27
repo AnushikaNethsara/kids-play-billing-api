@@ -13,8 +13,10 @@ Atlas M0 + Render/Railway/Koyeb/Fly.io).
 ## Architecture at a glance
 
 - **Money** is stored as integer minor units (LKR cents) everywhere - never floats.
-- **Bill numbers** (`KPA-20260715-0001`) come from an atomic per-day counter
-  (`findOneAndUpdate($inc)`), safe under concurrent cashiers without transactions.
+- **Bill numbers** (`KPA-20260926-143215`) carry the date and time of payment, not a daily
+  sequence - a counter told every customer holding a receipt how many bills the business
+  had taken that day. A per-second atomic counter (`findOneAndUpdate($inc)`) keeps them
+  unique under concurrent cashiers without transactions.
 - **Bill completion** is a compare-and-set (`DRAFT` -> `PAID` in one atomic update), so
   it can never run twice for the same bill. An optional `Idempotency-Key` header adds
   exact-response replay for client retries on top of that guarantee.

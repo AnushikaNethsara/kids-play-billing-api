@@ -595,6 +595,28 @@ export const billService = {
       });
     }
 
+    // A draft paid by someone other than the cashier who created it is the recovery path
+    // for a checkout abandoned at the till (an admin recording a payment that was taken
+    // but never confirmed). The bill keeps its original cashier; this records who
+    // actually took the money into the system, and when the draft was really made.
+    if (bill.cashierId.toString() !== actor.id) {
+      await auditLogService.record({
+        userId: actor.id,
+        userName: actor.name,
+        action: AuditAction.BILL_PAYMENT_RECORDED_BY_OTHER,
+        entityType: AuditEntityType.BILL,
+        entityId: updated.id,
+        metadata: {
+          originalCashierId: bill.cashierId.toString(),
+          originalCashierName: bill.cashierName,
+          draftCreatedAt: bill.createdAt,
+          paymentMethod: input.paymentMethod,
+          paidAmount,
+          grandTotal: totals.grandTotal,
+        },
+      });
+    }
+
     if (updated.customerId || updated.phoneNumber) {
       await customerService.recordVisit(
         {

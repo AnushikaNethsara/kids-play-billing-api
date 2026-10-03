@@ -1,5 +1,6 @@
 import type { BillStatus, DiscountType } from '../../common/constants/billStatus';
-import type { SessionPricingMode } from '../../common/constants/pricingModes';
+import type { SessionPricingMode, TieredPricing } from '../../common/constants/pricingModes';
+import type { TierHourLine, TierOvertime } from './billCalculator';
 import type { PaymentMethod } from '../../common/constants/paymentMethods';
 
 export interface CreateBillItemInput {
@@ -92,15 +93,25 @@ export interface BillItemPublic {
   /** The rule this line was billed under. Always PRORATA on a flat-price line. */
   pricingMode: SessionPricingMode;
   graceMinutes: number;
+  /** The hourly rates, overtime and rounding of a TIERED_HOURLY line. Null otherwise. */
+  tieredPricing: TieredPricing | null;
   /**
    * How `lineTotal` splits, derived server-side from the line's own snapshot so no client
-   * recomputes it. Null on anything that is not a block-priced session line.
+   * recomputes it. Null on anything that is not a block- or tier-priced session line.
    */
   blocksCharged: number | null;
   blockSubtotal: number | null;
   overageMinutes: number | null;
   overageAmount: number | null;
   graceApplied: boolean | null;
+  /** TIERED_HOURLY only: one entry per whole hour charged. Null on every other line. */
+  hourLines: TierHourLine[] | null;
+  /** TIERED_HOURLY only: the extra time past grace, or null when there was none. */
+  overtime: TierOvertime | null;
+  /** TIERED_HOURLY only: the total before rounding. */
+  rawTotal: number | null;
+  /** TIERED_HOURLY only: `lineTotal - rawTotal`. */
+  roundingAdjustment: number | null;
 }
 
 export interface BillPublic {

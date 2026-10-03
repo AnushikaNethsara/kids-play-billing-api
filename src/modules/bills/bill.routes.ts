@@ -107,6 +107,11 @@ router.get('/', validate({ query: listBillsQuerySchema }), asyncHandler(billCont
  *         `graceMinutes` are forgiven. Once that grace is exceeded the whole remainder is
  *         charged, counted from the start of the block rather than the end of the grace.
  *         The minimum does not apply here; the block fee already is the floor.
+ *       - `TIERED_HOURLY` - each whole hour at its own rate from `tieredPricing.hourlyRates`
+ *         (the 4th rate repeats), with the 1st hour as the minimum. Past each hour's grace,
+ *         the whole remainder is charged at the next hour's rate, per minute or in blocks.
+ *         The total is then rounded by the package's rounding rule; `lineTotal` is the
+ *         rounded amount, and `roundingAdjustment` on the item shows the difference.
  *
  *       Tickets are identified by their printed code rather than by id so a cashier app
  *       that has been offline since check-in can compose this request without a round

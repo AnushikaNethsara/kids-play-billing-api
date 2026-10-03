@@ -3,7 +3,12 @@ import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import {
   DEFAULT_SESSION_PRICING_MODE,
   SessionPricingMode,
+  type TieredPricing,
 } from '../../common/constants/pricingModes';
+import {
+  resolveTieredPricing,
+  tieredPricingSchema,
+} from '../play-packages/tieredPricing.schema';
 
 export interface PlaySessionDocument {
   /**
@@ -30,6 +35,8 @@ export interface PlaySessionDocument {
   pricingMode: SessionPricingMode;
   /** Always 0 on a PRORATA session, where grace means nothing. */
   graceMinutes: number;
+  /** The hourly rates, overtime and rounding. Set only on a TIERED_HOURLY session. */
+  tieredPricing: TieredPricing | null;
 
   customerId: Types.ObjectId | null;
   parentName: string;
@@ -100,6 +107,7 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
       default: DEFAULT_SESSION_PRICING_MODE,
     },
     graceMinutes: { type: Number, default: 0, min: 0 },
+    tieredPricing: { type: tieredPricingSchema, default: null },
 
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', default: null },
     parentName: { type: String, default: '' },
@@ -147,17 +155,25 @@ playSessionSchema.index({ billId: 1 });
  */
 export function resolveSessionRate(
   session: Pick<PlaySessionDocument, 'unitPrice' | 'rateDurationMinutes'> &
-    Partial<Pick<PlaySessionDocument, 'pricingMode' | 'graceMinutes'>>,
+    Partial<Pick<PlaySessionDocument, 'pricingMode' | 'graceMinutes' | 'tieredPricing'>>,
 ): {
   pricingMode: SessionPricingMode;
   unitPrice: number;
   rateDurationMinutes: number;
   graceMinutes: number;
+  tieredPricing: TieredPricing | null;
 } {
-  const pricingMode =
-    session.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
-      ? SessionPricingMode.BLOCK_WITH_GRACE
-      : DEFAULT_SESSION_PRICING_MODE;
+  const tieredPricing = resolveTieredPricing(session);
+  let pricingMode: SessionPricingMode = DEFAULT_SESSION_PRICING_MODE;
+  if (session.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE) {
+    pricingMode = SessionPricingMode.BLOCK_WITH_GRACE;
+  } else if (session.pricingMode === SessionPricingMode.TIERED_HOURLY && tieredPricing) {
+    // A tiered session without its rates cannot be priced as tiered. Validation never lets
+    // one be saved; if one appears anyway, it prices pro-rata at the 1st-hour rate.
+    pricingMode = SessionPricingMode.TIERED_HOURLY;
+  }
+
+  const hasGrace = pricingMode !== SessionPricingMode.PRORATA;
 
   return {
     pricingMode,
@@ -165,9 +181,10 @@ export function resolveSessionRate(
     rateDurationMinutes: session.rateDurationMinutes,
     // Grace is meaningless under PRORATA, so it is never carried into one.
     graceMinutes:
-      pricingMode === SessionPricingMode.BLOCK_WITH_GRACE && Number.isFinite(session.graceMinutes)
+      hasGrace && Number.isFinite(session.graceMinutes)
         ? Math.max(session.graceMinutes as number, 0)
         : 0,
+    tieredPricing: pricingMode === SessionPricingMode.TIERED_HOURLY ? tieredPricing : null,
   };
 }
 

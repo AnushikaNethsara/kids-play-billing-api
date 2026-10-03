@@ -46,25 +46,23 @@ import type { AuthenticatedUser } from '../../common/types/express';
 import { buildPaginationMeta } from '../../common/utils/pagination';
 
 function toPublicItem(item: BillItemSubdocument): BillItemPublic {
-  const pricingMode =
-    item.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
-      ? SessionPricingMode.BLOCK_WITH_GRACE
-      : SessionPricingMode.PRORATA;
+  // The item's own snapshot, read through the session resolver so an item with a missing
+  // or unknown mode reads as PRORATA, and a TIERED_HOURLY item always has its rates.
+  const rate = resolveSessionRate({
+    unitPrice: item.unitPrice,
+    rateDurationMinutes: item.durationMinutes,
+    pricingMode: item.pricingMode,
+    graceMinutes: item.graceMinutes,
+    tieredPricing: item.tieredPricing,
+  });
+  const { pricingMode } = rate;
 
   // Reproduced here rather than stored, from inputs that were all snapshotted at billing
   // time, so it is deterministic. Deriving at the boundary means no client ever works out
-  // a block split for itself, and `lineTotal` remains the one authority on the money.
+  // a block or tier split for itself, and `lineTotal` remains the one authority on the money.
   const breakdown =
-    pricingMode === SessionPricingMode.BLOCK_WITH_GRACE && item.billedMinutes !== null
-      ? priceSession(
-          {
-            pricingMode,
-            unitPrice: item.unitPrice,
-            rateDurationMinutes: item.durationMinutes,
-            graceMinutes: item.graceMinutes ?? 0,
-          },
-          item.billedMinutes,
-        )
+    pricingMode !== SessionPricingMode.PRORATA && item.billedMinutes !== null
+      ? priceSession(rate, item.billedMinutes)
       : null;
 
   return {
@@ -81,11 +79,17 @@ function toPublicItem(item: BillItemSubdocument): BillItemPublic {
     billedMinutes: item.billedMinutes ?? null,
     pricingMode,
     graceMinutes: item.graceMinutes ?? 0,
+    tieredPricing: rate.tieredPricing,
     blocksCharged: breakdown?.blocksCharged ?? null,
     blockSubtotal: breakdown?.blockSubtotal ?? null,
     overageMinutes: breakdown?.overageMinutes ?? null,
     overageAmount: breakdown?.overageAmount ?? null,
     graceApplied: breakdown?.graceApplied ?? null,
+    hourLines: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.hourLines ?? null) : null,
+    overtime: breakdown?.overtime ?? null,
+    rawTotal: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.rawTotal ?? null) : null,
+    roundingAdjustment:
+      pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.roundingAdjustment ?? null) : null,
   };
 }
 
@@ -167,6 +171,7 @@ async function buildItemSnapshots(items: CreateBillInput['items']): Promise<Bill
       // to block pricing, that must not follow the line here.
       pricingMode: SessionPricingMode.PRORATA,
       graceMinutes: 0,
+      tieredPricing: null,
     } as BillItemSubdocument);
   }
 
@@ -334,24 +339,28 @@ export const billService = {
         claimed.push(claimedSession);
       }
 
-      const items = claimed.map<BillItemSubdocument>((session) => ({
-        childName: session.childName,
-        playPackageId: session.playPackageId,
-        packageName: session.packageName,
-        // The package rate as snapshotted at check-in, never re-read from PlayPackage.
-        durationMinutes: session.rateDurationMinutes,
-        unitPrice: session.unitPrice,
-        quantity: 1,
-        // Frozen on the session by the claim above, in the same atomic write as
-        // billedMinutes - so the bill and the session can never disagree about the amount.
-        lineTotal: session.chargedAmount ?? 0,
-        pricingMode: resolveSessionRate(session).pricingMode,
-        graceMinutes: resolveSessionRate(session).graceMinutes,
-        playSessionId: session._id,
-        checkInAt: session.checkInAt,
-        checkOutAt: session.checkOutAt,
-        billedMinutes: session.billedMinutes,
-      }));
+      const items = claimed.map<BillItemSubdocument>((session) => {
+        const rate = resolveSessionRate(session);
+        return {
+          childName: session.childName,
+          playPackageId: session.playPackageId,
+          packageName: session.packageName,
+          // The package rate as snapshotted at check-in, never re-read from PlayPackage.
+          durationMinutes: session.rateDurationMinutes,
+          unitPrice: session.unitPrice,
+          quantity: 1,
+          // Frozen on the session by the claim above, in the same atomic write as
+          // billedMinutes - so the bill and the session can never disagree about the amount.
+          lineTotal: session.chargedAmount ?? 0,
+          pricingMode: rate.pricingMode,
+          graceMinutes: rate.graceMinutes,
+          tieredPricing: rate.tieredPricing,
+          playSessionId: session._id,
+          checkInAt: session.checkInAt,
+          checkOutAt: session.checkOutAt,
+          billedMinutes: session.billedMinutes,
+        };
+      });
 
       const discountType = input.discount?.type ?? DiscountType.NONE;
       const discountValue = input.discount?.value ?? 0;

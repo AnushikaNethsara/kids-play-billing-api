@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { playSessionRepository } from './playSession.repository';
 import { playPackageRepository } from '../play-packages/playPackage.repository';
 import { resolveGraceMinutes, resolvePricingMode } from '../play-packages/playPackage.model';
+import { resolveTieredPricing } from '../play-packages/tieredPricing.schema';
 import { settingsService } from '../settings/settings.service';
 import {
   resolveMaximumSessionHours,
@@ -47,6 +48,7 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     unitPrice: session.unitPrice,
     pricingMode: resolveSessionRate(session).pricingMode,
     graceMinutes: resolveSessionRate(session).graceMinutes,
+    tieredPricing: resolveSessionRate(session).tieredPricing,
     customerId: session.customerId ? session.customerId.toString() : null,
     parentName: session.parentName,
     phoneNumber: session.phoneNumber,
@@ -74,7 +76,7 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
 export function quoteSession(
   session: Pick<
     PlaySessionHydrated,
-    'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes'
+    'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes' | 'tieredPricing'
   >,
   asOf: Date,
   settings: { minimumBillableMinutes: number; maximumSessionHours: number },
@@ -135,6 +137,7 @@ export const playSessionService = {
       rateDurationMinutes: pkg.durationMinutes,
       pricingMode: resolvePricingMode(pkg),
       graceMinutes: resolveGraceMinutes(pkg),
+      tieredPricing: resolveTieredPricing(pkg),
     });
 
     try {
@@ -151,6 +154,8 @@ export const playSessionService = {
         // mode back does not lose it, but a PRORATA session carries 0, so even a client
         // that forgets to check the mode cannot misprice from this snapshot.
         graceMinutes: packageRate.graceMinutes,
+        // The whole tier table, so a later edit to the package never reprices this child.
+        tieredPricing: packageRate.tieredPricing,
         customerId: input.customer?.customerId ? new Types.ObjectId(input.customer.customerId) : null,
         parentName: input.customer?.parentName ?? '',
         phoneNumber: input.customer?.phoneNumber ?? '',

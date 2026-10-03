@@ -344,8 +344,8 @@ export const dashboardService = {
           totalPlayMinutes: { $sum: '$billedMinutes' },
           longestPlayMinutes: { $max: '$billedMinutes' },
           // A session billed at exactly the minimum is one where the child left early
-          // enough for the floor to bite. The floor does not apply to block pricing, so a
-          // short block visit is not one of these - counting it would report a minimum
+          // enough for the floor to bite. The floor applies only to pro-rata pricing, so a
+          // short block or tiered visit is not one of these - counting it would report a minimum
           // that was never applied. The `$ifNull` is load-bearing: an aggregation reads
           // raw BSON, where a session written before pricing modes has no such key at all
           // and Mongoose's schema default never runs.
@@ -356,9 +356,9 @@ export const dashboardService = {
                   $and: [
                     { $lte: ['$billedMinutes', minimumBillableMinutes] },
                     {
-                      $ne: [
+                      $eq: [
                         { $ifNull: ['$pricingMode', SessionPricingMode.PRORATA] },
-                        SessionPricingMode.BLOCK_WITH_GRACE,
+                        SessionPricingMode.PRORATA,
                       ],
                     },
                   ],

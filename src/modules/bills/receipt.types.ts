@@ -26,6 +26,14 @@ export interface ReceiptItem {
   blockSummary?: string;
   overageMinutes?: number;
   overageAmount?: number;
+  /**
+   * Present only on a TIERED_HOURLY line: one row per hour charged (hours from the 4th on
+   * collapsed into one row), then the extra time, each with its amount. Pre-formatted for
+   * the same reason as `blockSummary`.
+   */
+  tierLines?: { label: string; amount: number }[];
+  /** TIERED_HOURLY only, and only when non-zero: what rounding added or removed. */
+  roundingAdjustment?: number;
 }
 
 export interface ReceiptData {

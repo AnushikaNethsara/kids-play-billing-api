@@ -319,6 +319,10 @@ describe('billCalculator', () => {
         graceApplied: false,
         inExtraTime: true,
         minutesUntilNextCharge: 0,
+        hourLines: [],
+        overtime: null,
+        rawTotal: 90_000,
+        roundingAdjustment: 0,
       });
     });
 
@@ -424,6 +428,10 @@ describe('billCalculator', () => {
           graceApplied: false,
           inExtraTime: false,
           minutesUntilNextCharge: null,
+          hourLines: [],
+          overtime: null,
+          rawTotal: calculateSessionLineTotal({ ...rate, billedMinutes }),
+          roundingAdjustment: 0,
         });
       }
     });

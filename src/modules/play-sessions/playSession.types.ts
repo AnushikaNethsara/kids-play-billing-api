@@ -1,5 +1,5 @@
 import type { PlaySessionStatus } from '../../common/constants/sessionStatus';
-import type { SessionPricingMode } from '../../common/constants/pricingModes';
+import type { SessionPricingMode, TieredPricing } from '../../common/constants/pricingModes';
 import type { SessionPriceBreakdown } from '../bills/billCalculator';
 
 export interface CheckInInput {
@@ -40,6 +40,8 @@ export interface PlaySessionPublic {
   unitPrice: number;
   pricingMode: SessionPricingMode;
   graceMinutes: number;
+  /** The hourly rates, overtime and rounding of a TIERED_HOURLY session. Null otherwise. */
+  tieredPricing: TieredPricing | null;
   customerId: string | null;
   parentName: string;
   phoneNumber: string;
@@ -70,7 +72,7 @@ export interface SessionQuote {
   asOf: Date;
   elapsedMinutes: number;
   billedMinutes: number;
-  /** Always false under BLOCK_WITH_GRACE, where the block fee is already the floor. */
+  /** Always false under BLOCK_WITH_GRACE and TIERED_HOURLY, where the first block or hour is the floor. */
   minimumApplied: boolean;
   lineTotal: number;
   /** True once the session has run past `BusinessSettings.maximumSessionHours`. */

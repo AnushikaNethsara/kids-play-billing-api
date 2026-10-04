@@ -1,5 +1,5 @@
 import { BillModel } from '../bills/bill.model';
-import { PlaySessionModel } from '../play-sessions/playSession.model';
+import { PlaySessionModel, resolveChildCount } from '../play-sessions/playSession.model';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
@@ -32,6 +32,7 @@ import {
   CHILDREN_ON_BILL,
   PLAY_LINES_ONLY,
   minimumAppliedExpr,
+  SESSION_CHILD_COUNT,
 } from '../../common/reporting/billFilters';
 
 async function resolveRange(query: DashboardQuery) {
@@ -371,6 +372,7 @@ export const dashboardService = {
 
     const [totals] = await PlaySessionModel.aggregate<{
       sessionCount: number;
+      childCount: number;
       totalPlayMinutes: number;
       longestPlayMinutes: number;
       minimumAppliedCount: number;
@@ -381,7 +383,10 @@ export const dashboardService = {
         $group: {
           _id: null,
           sessionCount: { $sum: 1 },
-          totalPlayMinutes: { $sum: '$billedMinutes' },
+          childCount: { $sum: SESSION_CHILD_COUNT },
+          // Child-minutes: a family of three playing an hour is three hours of play, which
+          // is what keeps revenue per play hour honest when the ticket charges three.
+          totalPlayMinutes: { $sum: { $multiply: ['$billedMinutes', SESSION_CHILD_COUNT] } },
           longestPlayMinutes: { $max: '$billedMinutes' },
           // A session billed at exactly the minimum is one where the child left early
           // enough for the floor to bite; see minimumAppliedExpr for which sessions count.
@@ -436,14 +441,16 @@ export const dashboardService = {
     ]);
 
     const sessionCount = totals?.sessionCount ?? 0;
+    const childCount = totals?.childCount ?? 0;
     const totalPlayMinutes = totals?.totalPlayMinutes ?? 0;
     const revenue = totals?.revenue ?? 0;
     const playHours = totalPlayMinutes / 60;
 
     return {
       sessionCount,
+      childCount,
       totalPlayMinutes,
-      averagePlayMinutes: sessionCount > 0 ? Math.round(totalPlayMinutes / sessionCount) : 0,
+      averagePlayMinutes: childCount > 0 ? Math.round(totalPlayMinutes / childCount) : 0,
       longestPlayMinutes: totals?.longestPlayMinutes ?? 0,
       minimumAppliedCount: totals?.minimumAppliedCount ?? 0,
       revenuePerPlayHour: playHours > 0 ? Math.round(revenue / playHours) : 0,
@@ -475,7 +482,7 @@ export const dashboardService = {
         checkInAt: { $lte: end },
         $or: [{ checkOutAt: { $gte: start } }, { checkOutAt: null }],
       },
-      { checkInAt: 1, checkOutAt: 1 },
+      { checkInAt: 1, checkOutAt: 1, childCount: 1 },
     ).lean();
 
     const buckets = new Array<number>(24).fill(0);
@@ -500,7 +507,8 @@ export const dashboardService = {
             hour12: false,
           }).format(cursor),
         );
-        buckets[hour % 24] += 1;
+        // A family ticket puts several children in the room at once.
+        buckets[hour % 24] += resolveChildCount(session);
         cursor.setUTCHours(cursor.getUTCHours() + 1);
       }
     }

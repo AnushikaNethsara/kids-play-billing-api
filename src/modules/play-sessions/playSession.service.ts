@@ -17,6 +17,8 @@ import { UserRole } from '../../common/constants/roles';
 import { AuthorizationError, InvalidStateError, NotFoundError, ValidationError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
 import {
+  resolveChildCount,
+  resolveChildNames,
   resolveSessionRate,
   sumSessionExtras,
   type PlaySessionExtraSubdocument,
@@ -51,6 +53,8 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     ticketCode: session.ticketCode,
     status: session.status,
     childName: session.childName,
+    childNames: resolveChildNames(session),
+    childCount: resolveChildCount(session),
     playPackageId: session.playPackageId.toString(),
     packageName: session.packageName,
     rateDurationMinutes: session.rateDurationMinutes,
@@ -92,12 +96,16 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
 /**
  * Prices a session as of `asOf`. Shared by the live quote shown on the cashier's screen
  * and by the authoritative calculation inside checkout, so the two can never drift apart.
+ *
+ * A family ticket is priced as one child and multiplied out, so it always costs exactly
+ * what the same children on separate tickets would - rounding included.
  */
 export function quoteSession(
   session: Pick<
     PlaySessionHydrated,
     'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes' | 'tieredPricing'
-  >,
+  > &
+    Partial<Pick<PlaySessionHydrated, 'childCount'>>,
   asOf: Date,
   settings: { minimumBillableMinutes: number; maximumSessionHours: number },
 ): SessionQuote {
@@ -115,12 +123,16 @@ export function quoteSession(
       ? null
       : new Date(asOf.getTime() + breakdown.minutesUntilNextCharge * MILLISECONDS_PER_MINUTE);
 
+  const childCount = resolveChildCount(session);
+
   return {
     asOf,
     elapsedMinutes,
     billedMinutes,
     minimumApplied,
-    lineTotal: breakdown.lineTotal,
+    lineTotal: breakdown.lineTotal * childCount,
+    perChildLineTotal: breakdown.lineTotal,
+    childCount,
     exceedsMaximumSession: elapsedMinutes > settings.maximumSessionHours * MINUTES_PER_HOUR,
     breakdown,
     nextChargeAt,
@@ -167,7 +179,7 @@ async function snapshotExtras(
 
 export const playSessionService = {
   /**
-   * Checking a child in. Retry-safe by construction: the unique index on `ticketCode`
+   * Checking a child - or a family of children on one ticket - in. Retry-safe by construction: the unique index on `ticketCode`
    * means a sync that retries after an ambiguous network failure gets the session it
    * already created back, rather than checking the same child in twice. This is why no
    * Idempotency-Key header is needed here, unlike bill completion.
@@ -210,11 +222,16 @@ export const playSessionService = {
       tieredPricing: resolveTieredPricing(pkg),
     });
 
+    // Validation guarantees exactly one of the two is present.
+    const childNames = input.childNames ?? [input.childName as string];
+
     try {
       const session = await playSessionRepository.create({
         ticketCode: input.ticketCode,
         status: PlaySessionStatus.ACTIVE,
-        childName: input.childName,
+        childName: childNames.join(', '),
+        childNames,
+        childCount: childNames.length,
         playPackageId: pkg._id,
         packageName: pkg.name,
         rateDurationMinutes: pkg.durationMinutes,

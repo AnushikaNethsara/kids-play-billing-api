@@ -248,7 +248,11 @@ export const receiptService = {
         continue;
       }
 
-      lines.push(...wrapText(`Child: ${item.childName}`, width));
+      // A family ticket: several children on one line, every row below priced per child.
+      const isFamilyTicket = Boolean(item.billedMinutes) && item.quantity > 1;
+      lines.push(
+        ...wrapText(isFamilyTicket ? `Children (${item.quantity}): ${item.childName}` : `Child: ${item.childName}`, width),
+      );
 
       // Time-billed item: show the parent what they are actually paying for - when the
       // child went in, when they came out, and the rate that was applied.
@@ -290,7 +294,13 @@ export const receiptService = {
         );
       }
 
-      const label = item.billedMinutes ? item.packageName : `${item.packageName} x ${item.quantity}`;
+      if (isFamilyTicket) {
+        // The rows above explain one child; this is what they add up to, so the paper
+        // reconciles before it is multiplied out.
+        lines.push(twoColumnLine('  Per child', formatMoney(item.lineTotal / item.quantity), width));
+      }
+      const label =
+        item.billedMinutes && !isFamilyTicket ? item.packageName : `${item.packageName} x ${item.quantity}`;
       lines.push(twoColumnLine(label, formatMoney(item.lineTotal), width));
     }
     lines.push(dashLine(width));

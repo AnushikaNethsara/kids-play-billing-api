@@ -23,12 +23,15 @@ router.use(authenticate);
  * /play-sessions:
  *   post:
  *     tags: [Play Sessions]
- *     summary: Check a child in and open a play session
+ *     summary: Check a child - or a family of children - in and open a play session
  *     description: >
  *       Opens a timed session and returns the ticket the QR slip encodes. The client
  *       supplies `ticketCode`, which is unique - re-sending the same code returns the
  *       existing session with a 200 instead of creating a duplicate, so an offline
  *       cashier app can retry a failed sync safely without an Idempotency-Key header.
+ *       Send `childName` for one child, or `childNames` for a family ticket - several
+ *       children on the same package who check out together, charged one child's price
+ *       times `childCount`. Exactly one of the two.
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
@@ -36,12 +39,18 @@ router.use(authenticate);
  *         application/json:
  *           schema:
  *             type: object
- *             required: [ticketCode, childName, playPackageId]
+ *             required: [ticketCode, playPackageId]
  *             properties:
  *               ticketCode:
  *                 type: string
  *                 description: Device-generated code encoded in the printed QR
- *               childName: { type: string }
+ *               childName: { type: string, description: A single child }
+ *               childNames:
+ *                 type: array
+ *                 description: A family ticket - one name per child
+ *                 minItems: 1
+ *                 maxItems: 10
+ *                 items: { type: string }
  *               playPackageId: { type: string }
  *               checkInAt:
  *                 type: string
@@ -103,7 +112,8 @@ router.get('/', validate({ query: listPlaySessionsQuerySchema }), asyncHandler(p
  *     description: >
  *       The checkout scan endpoint. The returned `quote` is advisory - a live number for
  *       the cashier's screen. The amount actually charged is recomputed inside
- *       `POST /bills/from-sessions`.
+ *       `POST /bills/from-sessions`. On a family ticket `quote.lineTotal` is the whole
+ *       ticket (`perChildLineTotal` x `childCount`); `quote.breakdown` explains one child.
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - { in: path, name: ticketCode, required: true, schema: { type: string } }

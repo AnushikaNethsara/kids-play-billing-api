@@ -42,8 +42,9 @@ export function revenueRecognizedMatch(start: Date, end: Date) {
 export const ITEM_KIND = { $ifNull: ['$$item.kind', BillItemKind.PLAY] } as const;
 
 /**
- * Children through the door on a bill: one per PLAY line, the headcount of a GROUP line,
- * and nobody for a pair of socks. Counting lines, as this used to, would report a group of
+ * Children through the door on a bill: one per fixed-price PLAY line, the children on a
+ * checked-out ticket (its `quantity` - a family ticket covers several), the headcount of
+ * a GROUP line, and nobody for a pair of socks. Counting lines, as this used to, would report a group of
  * twenty as one child and every pair of socks as another.
  *
  * An expression over one bill, not an accumulator: inside `$group` it has to be wrapped in
@@ -59,6 +60,12 @@ export const CHILDREN_ON_BILL = {
           branches: [
             { case: { $eq: [ITEM_KIND, BillItemKind.GROUP] }, then: '$$item.quantity' },
             { case: { $eq: [ITEM_KIND, BillItemKind.PRODUCT] }, then: 0 },
+            // A ticket line. Every ticket before family tickets was billed at quantity 1,
+            // so this reproduces the old count for them.
+            {
+              case: { $ne: [{ $ifNull: ['$$item.playSessionId', null] }, null] },
+              then: { $ifNull: ['$$item.quantity', 1] },
+            },
           ],
           default: 1,
         },
@@ -66,6 +73,12 @@ export const CHILDREN_ON_BILL = {
     },
   },
 } as const;
+
+/**
+ * Children on one play session, as an expression over a PlaySession document. A family
+ * ticket covers several; every ticket before family tickets has no such key and was one.
+ */
+export const SESSION_CHILD_COUNT = { $ifNull: ['$childCount', 1] } as const;
 
 /** After `$unwind: '$items'`: keeps only the lines that are a child on a play package. */
 export const PLAY_LINES_ONLY = {

@@ -10,6 +10,7 @@ import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import {
   CHILDREN_ON_BILL,
+  SESSION_CHILD_COUNT,
   EXCLUDE_TEST_BILLS,
   EXCLUDE_TEST_SESSIONS,
   lineRevenueOfKind,
@@ -158,7 +159,8 @@ export async function getPeriodSummary(
           $group: {
             _id: bucketOf('$checkOutAt'),
             sessionCount: { $sum: 1 },
-            playMinutes: { $sum: '$billedMinutes' },
+            // Child-minutes, as the dashboard counts them, so the buckets add up to its total.
+            playMinutes: { $sum: { $multiply: ['$billedMinutes', SESSION_CHILD_COUNT] } },
             minimumAppliedCount: { $sum: minimumAppliedExpr(minimum) },
           },
         },

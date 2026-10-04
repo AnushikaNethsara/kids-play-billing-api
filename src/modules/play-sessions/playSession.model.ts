@@ -41,7 +41,23 @@ export interface PlaySessionDocument {
    */
   ticketCode: string;
   status: PlaySessionStatus;
+  /**
+   * Display form of the children on this ticket - the one name, or the names joined
+   * with ", " on a family ticket. Kept so every consumer that predates family tickets
+   * (reports, CSVs, search, receipts) still reads something sensible.
+   */
   childName: string;
+  /**
+   * The children on a family ticket, one name each. Empty on tickets created before
+   * family tickets existed; read through `resolveChildNames`.
+   */
+  childNames: string[];
+  /**
+   * How many children this ticket covers. Every child is on the same package and leaves
+   * together, so the ticket is charged one child's price times this. Absent on older
+   * tickets; read through `resolveChildCount`.
+   */
+  childCount: number;
 
   // Rate snapshot, taken at check-in. A later price change must never rewrite what an
   // already-playing child is charged - same discipline as BillItemSubdocument. These five
@@ -136,6 +152,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
       default: PlaySessionStatus.ACTIVE,
     },
     childName: { type: String, required: true, trim: true },
+    childNames: { type: [String], default: [] },
+    childCount: { type: Number, default: 1, min: 1 },
 
     playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', required: true },
     packageName: { type: String, required: true },
@@ -228,6 +246,21 @@ export function resolveSessionRate(
         : 0,
     tieredPricing: pricingMode === SessionPricingMode.TIERED_HOURLY ? tieredPricing : null,
   };
+}
+
+/**
+ * How many children a ticket covers. Read defensively for the same reason as
+ * `resolveSessionRate`: a `.lean()` read of a ticket from before family tickets has no
+ * such key, and it was always one child.
+ */
+export function resolveChildCount(session: { childCount?: number | null }): number {
+  const count = session.childCount;
+  return typeof count === 'number' && Number.isInteger(count) && count >= 1 ? count : 1;
+}
+
+/** The children on a ticket, one name each. Older tickets carry only `childName`. */
+export function resolveChildNames(session: { childName: string; childNames?: string[] | null }): string[] {
+  return session.childNames?.length ? session.childNames : [session.childName];
 }
 
 /** What the extras on a session add up to. Tolerates sessions predating extras. */

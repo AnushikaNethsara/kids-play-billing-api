@@ -22,6 +22,9 @@ export const extraLocalIdSchema = z
 
 export const MAX_EXTRAS_PER_SESSION = 20;
 
+/** The most children one family ticket may cover - a guard against a mistyped headcount. */
+export const MAX_CHILDREN_PER_TICKET = 10;
+
 export const sessionExtraInputSchema = z.object({
   localId: extraLocalIdSchema,
   productId: z.string().length(24, 'Invalid product id'),
@@ -44,20 +47,32 @@ export const removeSessionExtraSchema = z
   })
   .optional();
 
-export const checkInSchema = z.object({
-  ticketCode: ticketCodeSchema,
-  childName: z.string().trim().min(1).max(100),
-  playPackageId: z.string().length(24, 'Invalid play package id'),
-  checkInAt: z.string().datetime({ offset: true }).optional(),
-  customer: z
-    .object({
-      customerId: z.string().length(24, 'Invalid customer id').optional(),
-      parentName: z.string().trim().max(100).optional(),
-      phoneNumber: z.string().trim().max(30).optional(),
-    })
-    .optional(),
-  extras: z.array(sessionExtraInputSchema).max(MAX_EXTRAS_PER_SESSION).optional(),
-});
+// A single child sends `childName`, as every build before family tickets did; a family
+// sends `childNames`. Exactly one, so a request can never mean two different headcounts.
+export const checkInSchema = z
+  .object({
+    ticketCode: ticketCodeSchema,
+    childName: z.string().trim().min(1).max(100).optional(),
+    childNames: z
+      .array(z.string().trim().min(1, 'A child name cannot be empty').max(100))
+      .min(1, 'At least one child is required')
+      .max(MAX_CHILDREN_PER_TICKET, `A ticket can cover at most ${MAX_CHILDREN_PER_TICKET} children`)
+      .optional(),
+    playPackageId: z.string().length(24, 'Invalid play package id'),
+    checkInAt: z.string().datetime({ offset: true }).optional(),
+    customer: z
+      .object({
+        customerId: z.string().length(24, 'Invalid customer id').optional(),
+        parentName: z.string().trim().max(100).optional(),
+        phoneNumber: z.string().trim().max(30).optional(),
+      })
+      .optional(),
+    extras: z.array(sessionExtraInputSchema).max(MAX_EXTRAS_PER_SESSION).optional(),
+  })
+  .refine((body) => (body.childName === undefined) !== (body.childNames === undefined), {
+    message: 'Send exactly one of childName or childNames',
+    path: ['childNames'],
+  });
 
 export const voidSessionSchema = z.object({
   reason: z.string().trim().min(3, 'A reason of at least 3 characters is required').max(300),

@@ -94,6 +94,7 @@ export function sessionColumns(timezone: string, includeContact: boolean): CsvCo
     { header: 'Ticket', value: (row) => row.ticketCode },
     { header: 'Status', value: (row) => row.status },
     { header: 'Child', value: (row) => row.childName },
+    { header: 'Children', kind: 'raw', value: (row) => row.childCount },
     { header: 'Package', value: (row) => row.packageName },
     { header: 'Pricing', value: (row) => row.pricingMode },
     { header: 'Check-in', kind: 'raw', value: (row) => date(row.checkInAt) },

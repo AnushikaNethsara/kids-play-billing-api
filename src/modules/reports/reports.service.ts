@@ -2,6 +2,7 @@ import { Types, type FilterQuery } from 'mongoose';
 import { BillModel, type BillDocument, type BillItemSubdocument } from '../bills/bill.model';
 import {
   PlaySessionModel,
+  resolveChildCount,
   sumSessionExtras,
   type PlaySessionDocument,
 } from '../play-sessions/playSession.model';
@@ -105,6 +106,8 @@ function childrenOnLine(item: BillItemSubdocument): number {
   const kind = resolveItemKind(item);
   if (kind === BillItemKind.GROUP) return item.quantity;
   if (kind === BillItemKind.PRODUCT) return 0;
+  // A checked-out ticket: a family ticket covers several children. Mirrors CHILDREN_ON_BILL.
+  if (item.playSessionId) return item.quantity ?? 1;
   return 1;
 }
 
@@ -239,6 +242,7 @@ function toSessionReportRow(
     ticketCode: session.ticketCode,
     status: session.status,
     childName: session.childName,
+    childCount: resolveChildCount(session),
     packageName: session.packageName,
     pricingMode,
     checkInAt: session.checkInAt,
@@ -375,6 +379,7 @@ export const reportsService = {
         id: session._id.toString(),
         ticketCode: session.ticketCode,
         childName: session.childName,
+        childCount: resolveChildCount(session),
         checkInAt: session.checkInAt,
         cashierName: session.checkInCashierName,
       })),

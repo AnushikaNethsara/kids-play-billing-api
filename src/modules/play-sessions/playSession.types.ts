@@ -27,7 +27,10 @@ export interface PlaySessionExtraPublic {
 
 export interface CheckInInput {
   ticketCode: string;
-  childName: string;
+  /** A single child. Exactly one of this and `childNames` is sent. */
+  childName?: string;
+  /** A family ticket: every child on the same package, checking out together. */
+  childNames?: string[];
   playPackageId: string;
   /** ISO timestamp from the device. Defaults to server time when omitted (online check-in). */
   checkInAt?: string;
@@ -58,7 +61,12 @@ export interface PlaySessionPublic {
   id: string;
   ticketCode: string;
   status: PlaySessionStatus;
+  /** The one name, or the names joined with ", " on a family ticket. */
   childName: string;
+  /** One name per child. Never empty - an older ticket answers `[childName]`. */
+  childNames: string[];
+  /** Children on this ticket. The ticket is charged one child's price times this. */
+  childCount: number;
   playPackageId: string;
   packageName: string;
   rateDurationMinutes: number;
@@ -103,10 +111,17 @@ export interface SessionQuote {
   billedMinutes: number;
   /** Always false under BLOCK_WITH_GRACE and TIERED_HOURLY, where the first block or hour is the floor. */
   minimumApplied: boolean;
+  /** What the whole ticket costs so far: `perChildLineTotal x childCount`. */
   lineTotal: number;
+  /** What one child on this ticket costs so far - the figure `breakdown` explains. */
+  perChildLineTotal: number;
+  childCount: number;
   /** True once the session has run past `BusinessSettings.maximumSessionHours`. */
   exceedsMaximumSession: boolean;
-  /** How `lineTotal` was arrived at, so a client never has to work it out. */
+  /**
+   * How one child's price was arrived at, so a client never has to work it out. On a
+   * family ticket this is per child: its `lineTotal` is `perChildLineTotal`.
+   */
   breakdown: SessionPriceBreakdown;
   /**
    * When the total next rises, as an instant rather than a duration - a board that polls

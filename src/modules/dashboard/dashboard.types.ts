@@ -58,9 +58,13 @@ export interface ProductPerformance {
  * count: an ACTIVE one has no duration yet, and a VOIDED one never represented real play.
  */
 export interface SessionSummary {
-  /** Sessions closed in the period. */
+  /** Tickets closed in the period. A family ticket is one. */
   sessionCount: number;
+  /** Children on those tickets - a family ticket counts each child. */
+  childCount: number;
+  /** Child-minutes of play: a family of three for an hour is 180. */
   totalPlayMinutes: number;
+  /** Per child. */
   averagePlayMinutes: number;
   longestPlayMinutes: number;
   /** How often the configured minimum had to be applied - is the minimum set right? */

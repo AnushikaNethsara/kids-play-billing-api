@@ -166,7 +166,15 @@ export interface DailyCloseReport {
   sessions: SessionSummary;
   billNumberRange: { first: string | null; last: string | null };
   openDrafts: Array<{ id: string; createdAt: Date; cashierName: string; grandTotal: number; parentName: string }>;
-  activeSessions: Array<{ id: string; ticketCode: string; childName: string; checkInAt: Date; cashierName: string }>;
+  activeSessions: Array<{
+    id: string;
+    ticketCode: string;
+    childName: string;
+    /** Children on the ticket - more than one on a family ticket. */
+    childCount: number;
+    checkInAt: Date;
+    cashierName: string;
+  }>;
   /**
    * Bills paid on this day that were cancelled or refunded after it ended. The totals
    * above are recalculated live and already reflect these, so a reprint can differ from
@@ -207,6 +215,8 @@ export interface SessionReportRow {
   ticketCode: string;
   status: PlaySessionStatus;
   childName: string;
+  /** Children on the ticket - more than one on a family ticket. */
+  childCount: number;
   packageName: string;
   pricingMode: SessionPricingMode;
   checkInAt: Date;

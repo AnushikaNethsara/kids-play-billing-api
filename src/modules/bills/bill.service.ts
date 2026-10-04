@@ -7,7 +7,7 @@ import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { playSessionRepository } from '../play-sessions/playSession.repository';
 import { productRepository } from '../products/product.repository';
-import { resolveSessionRate } from '../play-sessions/playSession.model';
+import { resolveChildCount, resolveChildNames, resolveSessionRate } from '../play-sessions/playSession.model';
 import type { PlaySessionHydrated } from '../play-sessions/playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { auditLogService } from '../audit-logs/auditLog.service';
@@ -500,10 +500,12 @@ export const billService = {
         });
 
         // Compare-and-set on ACTIVE: the loser of a race gets null and we roll back.
+        // A family ticket is one child's price times the headcount, frozen here in the
+        // same write that claims it.
         const claimedSession = await playSessionRepository.claimIfActive(ticketCode, {
           checkOutAt,
           billedMinutes,
-          chargedAmount: breakdown.lineTotal,
+          chargedAmount: breakdown.lineTotal * resolveChildCount(session),
           checkOutCashierId: new Types.ObjectId(actor.id),
           checkOutCashierName: actor.name,
         });
@@ -525,7 +527,9 @@ export const billService = {
           // The package rate as snapshotted at check-in, never re-read from PlayPackage.
           durationMinutes: session.rateDurationMinutes,
           unitPrice: session.unitPrice,
-          quantity: 1,
+          // The children on the ticket. Still not a multiplier of unitPrice: a timed
+          // line's total is lineTotal, never unitPrice x quantity.
+          quantity: resolveChildCount(session),
           // Frozen on the session by the claim above, in the same atomic write as
           // billedMinutes - so the bill and the session can never disagree about the amount.
           lineTotal: session.chargedAmount ?? 0,
@@ -615,7 +619,7 @@ export const billService = {
             ticketCodes,
             checkOutAt: checkOutAt.toISOString(),
             grandTotal: totals.grandTotal,
-            children: claimed.map((session) => session.childName),
+            children: claimed.flatMap((session) => resolveChildNames(session)),
           },
         });
       }

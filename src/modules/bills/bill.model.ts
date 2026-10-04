@@ -3,7 +3,9 @@ import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import {
   DEFAULT_SESSION_PRICING_MODE,
   SessionPricingMode,
+  type TieredPricing,
 } from '../../common/constants/pricingModes';
+import { tieredPricingSchema } from '../play-packages/tieredPricing.schema';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 
 export interface BillItemSubdocument {
@@ -33,7 +35,7 @@ export interface BillItemSubdocument {
   /**
    * The pricing rule this line was billed under, snapshotted with the rate.
    *
-   * Only these two inputs are stored, not the resulting split: `lineTotal` stays the sole
+   * Only these inputs are stored, not the resulting split: `lineTotal` stays the sole
    * authority on the money, and a stored split that disagreed with it would be a new way
    * for a bill to contradict itself. Because every input is snapshotted, the split is
    * reproduced exactly whenever it is needed for display - see `toPublicItem`.
@@ -42,6 +44,11 @@ export interface BillItemSubdocument {
    */
   pricingMode: SessionPricingMode;
   graceMinutes: number;
+  /**
+   * The hourly rates, overtime and rounding of a TIERED_HOURLY line. Null on every other
+   * line. `lineTotal` already includes the rounding.
+   */
+  tieredPricing: TieredPricing | null;
 }
 
 export interface BillDocument {
@@ -125,6 +132,7 @@ const billItemSchema = new Schema<BillItemSubdocument>(
       default: DEFAULT_SESSION_PRICING_MODE,
     },
     graceMinutes: { type: Number, default: 0 },
+    tieredPricing: { type: tieredPricingSchema, default: null },
   },
   { _id: false },
 );

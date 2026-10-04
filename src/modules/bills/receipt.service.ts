@@ -2,17 +2,58 @@ import { DateTime } from 'luxon';
 import type { BillHydrated } from './bill.model';
 import type { BusinessSettingsHydrated } from '../settings/settings.model';
 import type { ReceiptData, ReceiptItem } from './receipt.types';
-import { priceSession } from './billCalculator';
+import { priceSession, type SessionPriceBreakdown } from './billCalculator';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
+import { resolveSessionRate } from '../play-sessions/playSession.model';
 import { formatMoney } from '../../common/utils/money';
 import {
   centerText,
   dashLine,
+  formatCompactRate,
   formatDuration,
   getPaperWidthChars,
   twoColumnLine,
   wrapText,
 } from './receiptText';
+
+/** The hour from which tiered hours are collapsed into one receipt row. */
+const FIRST_COLLAPSED_HOUR = 4;
+
+/**
+ * The rows of a tiered line: hours 1 to 3 each on their own, hours from the 4th on in one
+ * row (they share a rate), then the extra time. Keeps a long visit to five rows at most.
+ */
+function buildTierLines(breakdown: SessionPriceBreakdown): { label: string; amount: number }[] {
+  const lines: { label: string; amount: number }[] = [];
+  const early = breakdown.hourLines.filter((line) => line.hour < FIRST_COLLAPSED_HOUR);
+  const late = breakdown.hourLines.filter((line) => line.hour >= FIRST_COLLAPSED_HOUR);
+
+  for (const line of early) {
+    lines.push({ label: `Hour ${line.hour} @${formatCompactRate(line.rate)}/h`, amount: line.amount });
+  }
+  if (late.length === 1) {
+    const [line] = late;
+    lines.push({ label: `Hour ${line.hour} @${formatCompactRate(line.rate)}/h`, amount: line.amount });
+  } else if (late.length > 1) {
+    const last = late[late.length - 1];
+    lines.push({
+      label: `Hrs ${late[0].hour}-${last.hour} @${formatCompactRate(last.rate)}/h`,
+      amount: late.reduce((sum, line) => sum + line.amount, 0),
+    });
+  }
+  if (breakdown.overtime) {
+    const { overtime } = breakdown;
+    const minutes =
+      overtime.chargedMinutes === overtime.minutes
+        ? formatDuration(overtime.minutes)
+        : `${formatDuration(overtime.minutes)}>${formatDuration(overtime.chargedMinutes)}`;
+    lines.push({
+      label: `Extra ${minutes} @${formatCompactRate(overtime.rate)}/h`,
+      amount: overtime.amount,
+    });
+  }
+  return lines;
+}
 
 export const receiptService = {
   buildReceiptData(bill: BillHydrated, settings: BusinessSettingsHydrated): ReceiptData {
@@ -60,22 +101,42 @@ export const receiptService = {
               .toFormat('hh:mm a');
           }
 
-          // A block line's total is blocks + overage, not a rate scaled to the time
-          // played, so the pro-rata "@price/duration" line below would misdescribe it.
+          const rate = resolveSessionRate({
+            unitPrice: item.unitPrice,
+            rateDurationMinutes: item.durationMinutes,
+            pricingMode: item.pricingMode,
+            graceMinutes: item.graceMinutes,
+            tieredPricing: item.tieredPricing,
+          });
+
+          // A tiered line is a sum of hours at different rates, plus extra time and a
+          // rounding, so it prints one row per part and the total reconciles on paper.
           if (
-            item.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE &&
+            rate.pricingMode === SessionPricingMode.TIERED_HOURLY &&
             item.billedMinutes !== null &&
             item.billedMinutes !== undefined
           ) {
-            const breakdown = priceSession(
-              {
-                pricingMode: SessionPricingMode.BLOCK_WITH_GRACE,
-                unitPrice: item.unitPrice,
-                rateDurationMinutes: item.durationMinutes,
-                graceMinutes: item.graceMinutes ?? 0,
-              },
-              item.billedMinutes,
-            );
+            const breakdown = priceSession(rate, item.billedMinutes);
+            const hourLabel = `${breakdown.blocksCharged} hr`;
+            receiptItem.blockSummary = breakdown.overtime
+              ? `${hourLabel} + ${formatDuration(breakdown.overtime.minutes)}`
+              : breakdown.graceApplied
+                ? `${hourLabel} (${formatDuration(rate.graceMinutes)} free)`
+                : hourLabel;
+            receiptItem.tierLines = buildTierLines(breakdown);
+            if (breakdown.roundingAdjustment !== 0) {
+              receiptItem.roundingAdjustment = breakdown.roundingAdjustment;
+            }
+          }
+
+          // A block line's total is blocks + overage, not a rate scaled to the time
+          // played, so the pro-rata "@price/duration" line below would misdescribe it.
+          if (
+            rate.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE &&
+            item.billedMinutes !== null &&
+            item.billedMinutes !== undefined
+          ) {
+            const breakdown = priceSession(rate, item.billedMinutes);
 
             const blockLabel = `${breakdown.blocksCharged} x ${formatDuration(item.durationMinutes)}`;
             receiptItem.blockSummary = breakdown.overageAmount > 0
@@ -158,6 +219,19 @@ export const receiptService = {
           twoColumnLine(
             `  incl. extra ${formatDuration(item.overageMinutes ?? 0)}`,
             formatMoney(item.overageAmount),
+            width,
+          ),
+        );
+      }
+      for (const tierLine of item.tierLines ?? []) {
+        lines.push(twoColumnLine(`  ${tierLine.label}`, formatMoney(tierLine.amount), width));
+      }
+      if (item.roundingAdjustment) {
+        const sign = item.roundingAdjustment > 0 ? '+' : '-';
+        lines.push(
+          twoColumnLine(
+            '  Rounding',
+            `${sign}${formatMoney(Math.abs(item.roundingAdjustment))}`,
             width,
           ),
         );

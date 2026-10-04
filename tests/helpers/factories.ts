@@ -3,7 +3,7 @@ import { UserModel } from '../../src/modules/users/user.model';
 import { PlayPackageModel } from '../../src/modules/play-packages/playPackage.model';
 import { authService } from '../../src/modules/auth/auth.service';
 import { UserRole } from '../../src/common/constants/roles';
-import { SessionPricingMode } from '../../src/common/constants/pricingModes';
+import { SessionPricingMode, type TieredPricing } from '../../src/common/constants/pricingModes';
 
 const TEST_PASSWORD = 'TestPassword123!';
 
@@ -40,6 +40,7 @@ export async function createPlayPackage(overrides: Partial<{
   price: number;
   pricingMode: SessionPricingMode;
   graceMinutes: number;
+  tieredPricing: TieredPricing | null;
   isActive: boolean;
 }> = {}) {
   return PlayPackageModel.create({
@@ -48,6 +49,7 @@ export async function createPlayPackage(overrides: Partial<{
     price: overrides.price ?? 80000,
     pricingMode: overrides.pricingMode ?? SessionPricingMode.PRORATA,
     graceMinutes: overrides.graceMinutes ?? 0,
+    tieredPricing: overrides.tieredPricing ?? null,
     isActive: overrides.isActive ?? true,
     description: '',
     sortOrder: 0,

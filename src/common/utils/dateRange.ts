@@ -1,13 +1,21 @@
 import { DateTime } from 'luxon';
 import { ValidationError } from '../errors';
 
-export type ReportPeriod =
-  | 'today'
-  | 'yesterday'
-  | 'this_week'
-  | 'this_month'
-  | 'this_year'
-  | 'custom';
+/**
+ * Named periods every range-taking endpoint accepts. One list, imported by each
+ * validation schema, so the dashboard and the reports cannot offer different presets.
+ */
+export const NAMED_PERIODS = [
+  'today',
+  'yesterday',
+  'this_week',
+  'last_week',
+  'this_month',
+  'last_month',
+  'this_year',
+] as const;
+
+export type ReportPeriod = (typeof NAMED_PERIODS)[number] | 'custom';
 
 export interface ResolvedDateRange {
   start: Date;
@@ -55,13 +63,22 @@ export function resolveDateRange(
     }
     case 'this_week':
       return { start: now.startOf('week').toJSDate(), end: now.endOf('week').toJSDate() };
+    case 'last_week': {
+      // Weeks start Monday (Luxon's ISO default), the same week this_week uses.
+      const lastWeek = now.minus({ weeks: 1 });
+      return { start: lastWeek.startOf('week').toJSDate(), end: lastWeek.endOf('week').toJSDate() };
+    }
     case 'this_month':
       return { start: now.startOf('month').toJSDate(), end: now.endOf('month').toJSDate() };
+    case 'last_month': {
+      const lastMonth = now.minus({ months: 1 });
+      return { start: lastMonth.startOf('month').toJSDate(), end: lastMonth.endOf('month').toJSDate() };
+    }
     case 'this_year':
       return { start: now.startOf('year').toJSDate(), end: now.endOf('year').toJSDate() };
     default:
       throw new ValidationError(
-        `Unknown period "${period}". Use one of: today, yesterday, this_week, this_month, this_year, or from/to`,
+        `Unknown period "${period}". Use one of: ${NAMED_PERIODS.join(', ')}, or from/to`,
       );
   }
 }

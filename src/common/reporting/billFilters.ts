@@ -1,5 +1,6 @@
 import { BillStatus } from '../constants/billStatus';
 import { BillItemKind } from '../constants/billItemKind';
+import { SessionPricingMode } from '../constants/pricingModes';
 
 /**
  * Match fragments and aggregation expressions shared by every pipeline that reports on
@@ -70,3 +71,55 @@ export const CHILDREN_ON_BILL = {
 export const PLAY_LINES_ONLY = {
   $match: { 'items.kind': { $nin: [BillItemKind.GROUP, BillItemKind.PRODUCT] } },
 } as const;
+
+/**
+ * A bill's line revenue of one kind, as an expression over one bill. Lines are summed
+ * before bill-level discount and tax, like the summary's `revenueByKind`.
+ */
+export function lineRevenueOfKind(kind: BillItemKind) {
+  return {
+    $sum: {
+      $map: {
+        input: '$items',
+        as: 'item',
+        in: { $cond: [{ $eq: [ITEM_KIND, kind] }, '$$item.lineTotal', 0] },
+      },
+    },
+  };
+}
+
+/**
+ * A bill's grand total if it is still PAID with this method, else 0. Refunded bills are
+ * left out, as in the dashboard's payment-method breakdown: their money went back.
+ */
+export function paidAmountWithMethod(method: string) {
+  return {
+    $cond: [
+      { $and: [{ $eq: ['$status', BillStatus.PAID] }, { $eq: ['$paymentMethod', method] }] },
+      '$grandTotal',
+      0,
+    ],
+  };
+}
+
+/**
+ * 1 for a closed session billed at or under the minimum, else 0. The floor applies only to
+ * pro-rata pricing, so a short block or tiered visit is not one of these - counting it
+ * would report a minimum that was never applied. The `$ifNull` is load-bearing: an
+ * aggregation reads raw BSON, where a session written before pricing modes has no such
+ * key at all and Mongoose's schema default never runs.
+ */
+export function minimumAppliedExpr(minimumBillableMinutes: number) {
+  return {
+    $cond: [
+      {
+        $and: [
+          { $lte: ['$billedMinutes', minimumBillableMinutes] },
+          { $eq: [{ $ifNull: ['$pricingMode', SessionPricingMode.PRORATA] }, SessionPricingMode.PRORATA] },
+        ],
+      },
+      1,
+      0,
+    ],
+  };
+}

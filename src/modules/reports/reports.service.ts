@@ -21,6 +21,7 @@ import { buildPaginationMeta, getSkip, type PaginationMeta } from '../../common/
 import { ValidationError } from '../../common/errors';
 import type { AuthenticatedUser } from '../../common/types/express';
 import { maskPhone } from './reports.csv';
+import { getPeriodSummary } from './periodSummary';
 import {
   ExceptionType,
   type BillLineRow,
@@ -33,6 +34,8 @@ import {
   type ExceptionRow,
   type ExceptionsQuery,
   type ExceptionsReport,
+  type PeriodSummaryQuery,
+  type PeriodSummaryReport,
   type ReportRangeQuery,
   type SessionReportQuery,
   type SessionReportRow,
@@ -280,6 +283,14 @@ function percentOf(part: number, whole: number): string {
 
 export const reportsService = {
   resolveReportRange,
+
+  async getPeriodSummary(
+    query: PeriodSummaryQuery,
+    actor: AuthenticatedUser,
+  ): Promise<{ range: ResolvedReportRange; report: PeriodSummaryReport }> {
+    const range = await resolveReportRange(query);
+    return { range, report: await getPeriodSummary(query, range, actor) };
+  },
 
   async getDailyClose(query: DailyCloseQuery, actor: AuthenticatedUser): Promise<DailyCloseReport> {
     const dayQuery = { from: query.date, to: query.date };

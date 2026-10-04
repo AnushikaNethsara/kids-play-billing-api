@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { NAMED_PERIODS } from '../../common/utils/dateRange';
 
 export const dashboardQuerySchema = z.object({
-  period: z.enum(['today', 'yesterday', 'this_week', 'this_month', 'this_year']).optional(),
+  period: z.enum(NAMED_PERIODS).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
 });

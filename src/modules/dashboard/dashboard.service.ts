@@ -3,7 +3,6 @@ import { PlaySessionModel } from '../play-sessions/playSession.model';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
-import { SessionPricingMode } from '../../common/constants/pricingModes';
 import { BillItemKind } from '../../common/constants/billItemKind';
 import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
@@ -32,6 +31,7 @@ import {
   revenueRecognizedMatch,
   CHILDREN_ON_BILL,
   PLAY_LINES_ONLY,
+  minimumAppliedExpr,
 } from '../../common/reporting/billFilters';
 
 async function resolveRange(query: DashboardQuery) {
@@ -384,30 +384,8 @@ export const dashboardService = {
           totalPlayMinutes: { $sum: '$billedMinutes' },
           longestPlayMinutes: { $max: '$billedMinutes' },
           // A session billed at exactly the minimum is one where the child left early
-          // enough for the floor to bite. The floor applies only to pro-rata pricing, so a
-          // short block or tiered visit is not one of these - counting it would report a minimum
-          // that was never applied. The `$ifNull` is load-bearing: an aggregation reads
-          // raw BSON, where a session written before pricing modes has no such key at all
-          // and Mongoose's schema default never runs.
-          minimumAppliedCount: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $lte: ['$billedMinutes', minimumBillableMinutes] },
-                    {
-                      $eq: [
-                        { $ifNull: ['$pricingMode', SessionPricingMode.PRORATA] },
-                        SessionPricingMode.PRORATA,
-                      ],
-                    },
-                  ],
-                },
-                1,
-                0,
-              ],
-            },
-          },
+          // enough for the floor to bite; see minimumAppliedExpr for which sessions count.
+          minimumAppliedCount: { $sum: minimumAppliedExpr(minimumBillableMinutes) },
           // Read the amount frozen at checkout rather than recomputing it. Two pricing
           // models re-expressed in a pipeline would be a third copy of the rules in the
           // least testable language available; sessions closed before `chargedAmount`

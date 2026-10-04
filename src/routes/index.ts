@@ -9,6 +9,7 @@ import { billRoutes } from '../modules/bills/bill.routes';
 import { dashboardRoutes } from '../modules/dashboard/dashboard.routes';
 import { settingsRoutes } from '../modules/settings/settings.routes';
 import { auditLogRoutes } from '../modules/audit-logs/auditLog.routes';
+import { reportRoutes } from '../modules/reports/reports.routes';
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use('/bills', billRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/audit-logs', auditLogRoutes);
+router.use('/reports', reportRoutes);
 
 export const apiRouter = router;

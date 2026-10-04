@@ -25,6 +25,7 @@ export const AuditAction = {
   SESSION_FORCE_CLOSED: 'SESSION_FORCE_CLOSED',
   SESSION_EXTRA_REMOVED: 'SESSION_EXTRA_REMOVED',
   SETTINGS_UPDATED: 'SETTINGS_UPDATED',
+  REPORT_EXPORTED: 'REPORT_EXPORTED',
 } as const;
 
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];
@@ -37,6 +38,7 @@ export const AuditEntityType = {
   CUSTOMER: 'CUSTOMER',
   PLAY_SESSION: 'PLAY_SESSION',
   PRODUCT: 'PRODUCT',
+  REPORT: 'REPORT',
 } as const;
 
 export type AuditEntityType = (typeof AuditEntityType)[keyof typeof AuditEntityType];

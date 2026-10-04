@@ -195,3 +195,65 @@ describe('customer visit timeline', () => {
     expect(res.status).toBe(409);
   });
 });
+
+describe('customer lookup at the till', () => {
+  async function lookup(token: string, phoneNumber: string) {
+    return request(app).get(`${API}/customers/lookup`).query({ phoneNumber }).set(auth(token));
+  }
+
+  it('answers null for a number the business has not seen', async () => {
+    const { accessToken } = await createCashier();
+    const res = await lookup(accessToken, '0700000000');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeNull();
+  });
+
+  it('tells the cashier how often the family comes and who usually plays', async () => {
+    const { accessToken: adminToken } = await createAdmin();
+    const { accessToken: cashierToken } = await createCashier();
+    const pkg = await createPlayPackage();
+
+    const first = await familyVisit(adminToken, pkg.id, ['Amal', 'Nimal']);
+    await backdate(first.id, 9);
+    const second = await familyVisit(adminToken, pkg.id, ['Amal', 'Sara']);
+    await backdate(second.id, 2);
+
+    const res = await lookup(cashierToken, '+94 77 123 4567');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      phoneNumber: '+94771234567',
+      visitCount: 2,
+      visitedToday: false,
+      loyalty: { interval: 0, nextVisitNumber: 3, rewardDue: false },
+    });
+    expect(res.body.data.usualChildren[0]).toBe('Amal');
+    expect([...res.body.data.usualChildren].sort()).toEqual(['Amal', 'Nimal', 'Sara']);
+  });
+
+  it('flags the Nth visit as reward due, and keeps it due for the rest of that day', async () => {
+    const { accessToken } = await createAdmin();
+    const pkg = await createPlayPackage();
+    const settings = await request(app)
+      .patch(`${API}/settings`)
+      .set(auth(accessToken))
+      .send({ loyaltyVisitInterval: 3 });
+    expect(settings.body.data.loyaltyVisitInterval).toBe(3);
+
+    for (const daysAgo of [9, 2]) {
+      const bill = await flatVisit(accessToken, pkg.id, 'Kasun');
+      await backdate(bill.id, daysAgo);
+    }
+
+    const before = await lookup(accessToken, PHONE);
+    expect(before.body.data.loyalty).toEqual({ interval: 3, nextVisitNumber: 3, rewardDue: true });
+
+    // Paid today: the reward was for today's visit, and a second check-in today is still it.
+    await flatVisit(accessToken, pkg.id, 'Kasun');
+    const after = await lookup(accessToken, PHONE);
+    expect(after.body.data.visitedToday).toBe(true);
+    expect(after.body.data.loyalty).toEqual({ interval: 3, nextVisitNumber: 3, rewardDue: true });
+
+    await request(app).patch(`${API}/settings`).set(auth(accessToken)).send({ loyaltyVisitInterval: 0 });
+  });
+});

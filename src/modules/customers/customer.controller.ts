@@ -37,6 +37,11 @@ export const customerController = {
     sendSuccess(res, customers);
   },
 
+  async lookup(req: Request, res: Response): Promise<void> {
+    const { phoneNumber } = req.query as unknown as { phoneNumber: string };
+    sendSuccess(res, await customerInsightsService.lookup(phoneNumber));
+  },
+
   async getProfile(req: Request, res: Response): Promise<void> {
     const profile = await customerInsightsService.getProfile(req.params.id);
     sendSuccess(res, profile);

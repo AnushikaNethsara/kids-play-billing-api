@@ -12,6 +12,7 @@ import {
   searchCustomerQuerySchema,
   childrenQuerySchema,
   listCustomerVisitsQuerySchema,
+  lookupCustomerQuerySchema,
 } from './customer.validation';
 
 const router = Router();
@@ -66,6 +67,29 @@ router.get(
   '/search',
   validate({ query: searchCustomerQuerySchema }),
   asyncHandler(customerController.search),
+);
+
+/**
+ * @openapi
+ * /customers/lookup:
+ *   get:
+ *     summary: A family at the till - visits, usual children, loyalty reward due
+ *     description: >
+ *       Exact match on the (normalised) phone number; `data` is null for a number the
+ *       business has not seen. `loyalty.rewardDue` is true when today's visit is a
+ *       multiple of `BusinessSettings.loyaltyVisitInterval` - a flag only, nothing is
+ *       discounted automatically.
+ *     tags: [Customers]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: query, name: phoneNumber, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: The family, or null }
+ */
+router.get(
+  '/lookup',
+  validate({ query: lookupCustomerQuerySchema }),
+  asyncHandler(customerController.lookup),
 );
 
 /**

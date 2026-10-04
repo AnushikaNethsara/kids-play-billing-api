@@ -5,6 +5,7 @@ import { customerBillsMatch, VISIT_BILL_MATCH, visitDayExpr } from './customerVi
 import { BillModel, type BillItemSubdocument } from '../bills/bill.model';
 import { PlaySessionModel } from '../play-sessions/playSession.model';
 import { settingsService } from '../settings/settings.service';
+import { resolveLoyaltyVisitInterval } from '../settings/settings.model';
 import { BillItemKind } from '../../common/constants/billItemKind';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
@@ -17,12 +18,16 @@ import { NotFoundError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
 import type { CustomerHydrated } from './customer.model';
 import type {
+  CustomerLookup,
   CustomerFrequency,
   CustomerProfile,
   CustomerProfileChild,
   CustomerVisitRow,
   ListCustomerVisitsQuery,
 } from './customer.types';
+
+/** How many of a family's children the till suggests. */
+const USUAL_CHILDREN = 4;
 
 /** How far back the profile's calendar heatmap reaches. */
 const HEATMAP_DAYS = 365;
@@ -212,6 +217,60 @@ function playWindow(items: BillItemSubdocument[]): { timeIn: Date | null; timeOu
 }
 
 export const customerInsightsService = {
+  /**
+   * The till's view of a family, by phone number: null when the number is new. Open to
+   * cashiers - it carries no money beyond what the parent would tell them anyway.
+   */
+  async lookup(phoneNumber: string): Promise<CustomerLookup | null> {
+    const customer = await customerRepository.findByPhoneNumber(phoneNumber);
+    if (!customer) return null;
+    const settings = await settingsService.getRaw();
+    const { timezone } = settings;
+
+    const days = await BillModel.aggregate<{ _id: string; lastPaidAt: Date }>([
+      { $match: { $and: [customerBillsMatch(customer), VISIT_BILL_MATCH] } },
+      { $group: { _id: visitDayExpr(timezone), lastPaidAt: { $max: '$paidAt' } } },
+      { $sort: { _id: 1 } },
+    ]);
+    const today = DateTime.now().setZone(timezone).toISODate() as string;
+    const visitedToday = days.some((day) => day._id === today);
+
+    const children = await PlaySessionModel.aggregate<{ _id: string }>([
+      {
+        $match: {
+          $and: [
+            { phoneNumber: customer.phoneNumber },
+            EXCLUDE_TEST_SESSIONS,
+            { status: { $ne: PlaySessionStatus.VOIDED } },
+          ],
+        },
+      },
+      { $project: { name: SESSION_CHILD_NAMES, checkInAt: 1 } },
+      { $unwind: '$name' },
+      { $group: { _id: '$name', tickets: { $sum: 1 }, lastSeenAt: { $max: '$checkInAt' } } },
+      { $sort: { tickets: -1, lastSeenAt: -1 } },
+      { $limit: USUAL_CHILDREN },
+    ]);
+
+    const interval = resolveLoyaltyVisitInterval(settings);
+    const nextVisitNumber = visitedToday ? days.length : days.length + 1;
+
+    return {
+      customerId: customer.id,
+      parentName: customer.parentName,
+      phoneNumber: customer.phoneNumber,
+      visitCount: days.length,
+      visitedToday,
+      lastVisitAt: days[days.length - 1]?.lastPaidAt ?? null,
+      usualChildren: children.map((child) => child._id),
+      loyalty: {
+        interval,
+        nextVisitNumber,
+        rewardDue: interval > 0 && nextVisitNumber % interval === 0,
+      },
+    };
+  },
+
   async getProfile(customerId: string): Promise<CustomerProfile> {
     const customer = await loadCustomer(customerId);
     const { timezone } = await settingsService.getRaw();

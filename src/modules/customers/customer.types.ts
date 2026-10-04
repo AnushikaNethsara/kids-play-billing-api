@@ -85,6 +85,29 @@ export interface CustomerVisitRow {
   bills: { id: string; billNumber: string | null }[];
 }
 
+/**
+ * What the till shows once a typed phone number matches a family: how often they come,
+ * who usually plays, and whether this visit earns the loyalty reward.
+ */
+export interface CustomerLookup {
+  customerId: string;
+  parentName: string;
+  phoneNumber: string;
+  visitCount: number;
+  /** A visit is already on record for today - a second check-in today is the same visit. */
+  visitedToday: boolean;
+  lastVisitAt: Date | null;
+  /** Up to four children, those who came most often first. */
+  usualChildren: string[];
+  loyalty: {
+    /** Every Nth visit earns a reward; 0 when loyalty is off. */
+    interval: number;
+    /** Which visit today is for this family. */
+    nextVisitNumber: number;
+    rewardDue: boolean;
+  };
+}
+
 export interface ListCustomerVisitsQuery {
   page: number;
   limit: number;

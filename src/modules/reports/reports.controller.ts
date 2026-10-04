@@ -7,7 +7,17 @@ import { logger } from '../../common/logger/logger';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
 import { CSV_BOM, csvHeaderLine, csvRowLine, type CsvColumn } from './reports.csv';
-import { billLineColumns, billRegisterColumns, exceptionColumns, sessionColumns } from './reports.columns';
+import {
+  billLineColumns,
+  billRegisterColumns,
+  cashierBreakdownColumns,
+  exceptionColumns,
+  packageBreakdownColumns,
+  paymentMethodBreakdownColumns,
+  periodSummaryColumns,
+  productBreakdownColumns,
+  sessionColumns,
+} from './reports.columns';
 import {
   ReportName,
   type BillLineRow,
@@ -15,6 +25,7 @@ import {
   type BillRegisterRow,
   type DailyCloseQuery,
   type ExceptionsQuery,
+  type PeriodSummaryQuery,
   type SessionReportQuery,
 } from './reports.types';
 
@@ -32,6 +43,8 @@ interface CsvExport<T> {
   range: ResolvedReportRange;
   columns: CsvColumn<T>[];
   rows: AsyncIterable<T>;
+  /** Distinguishes several files from one report, e.g. `cashier` -> `kpa-period-summary-cashier_...`. */
+  fileTag?: string;
   /** Filters and options, recorded verbatim in the audit entry. */
   options: Record<string, unknown>;
 }
@@ -48,7 +61,8 @@ interface CsvExport<T> {
  */
 async function sendCsv<T>(req: Request, res: Response, file: CsvExport<T>): Promise<void> {
   const actor = requireActor(req);
-  const filename = `kpa-${file.report}_${file.range.fromDate}_${file.range.toDate}.csv`;
+  const name = file.fileTag ? `${file.report}-${file.fileTag}` : file.report;
+  const filename = `kpa-${name}_${file.range.fromDate}_${file.range.toDate}.csv`;
 
   res.status(200);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -90,6 +104,48 @@ async function sendCsv<T>(req: Request, res: Response, file: CsvExport<T>): Prom
 }
 
 export const reportsController = {
+  async periodSummary(req: Request, res: Response): Promise<void> {
+    const query = req.query as unknown as PeriodSummaryQuery;
+    const { range, report } = await reportsService.getPeriodSummary(query, requireActor(req));
+
+    if (query.format !== 'csv') {
+      sendSuccess(res, report);
+      return;
+    }
+
+    const base = {
+      report: ReportName.PERIOD_SUMMARY,
+      range,
+      fileTag: query.breakdown,
+      options: { groupBy: report.groupBy, breakdown: query.breakdown },
+    };
+    switch (query.breakdown) {
+      case 'cashier':
+        await sendCsv(req, res, { ...base, columns: cashierBreakdownColumns(), rows: fromArray(report.cashiers) });
+        return;
+      case 'package':
+        await sendCsv(req, res, { ...base, columns: packageBreakdownColumns(), rows: fromArray(report.packages) });
+        return;
+      case 'product':
+        await sendCsv(req, res, { ...base, columns: productBreakdownColumns(), rows: fromArray(report.products) });
+        return;
+      case 'paymentMethod':
+        await sendCsv(req, res, {
+          ...base,
+          columns: paymentMethodBreakdownColumns(),
+          rows: fromArray(report.paymentMethods),
+        });
+        return;
+      default:
+        // One row per bucket, then the range-wide TOTAL row.
+        await sendCsv(req, res, {
+          ...base,
+          columns: periodSummaryColumns(),
+          rows: fromArray([...report.buckets, report.totalsRow]),
+        });
+    }
+  },
+
   async dailyClose(req: Request, res: Response): Promise<void> {
     const report = await reportsService.getDailyClose(req.query as unknown as DailyCloseQuery, requireActor(req));
     sendSuccess(res, report);

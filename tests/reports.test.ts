@@ -304,4 +304,96 @@ describe('reports', () => {
       expect(csv.text).toContain('500.00');
     });
   });
+  describe('period summary', () => {
+    type Bucket = { label: string; netRevenue: number; billCount: number; cashAmount: number; cardAmount: number; bankTransferAmount: number; otherAmount: number; tax: number; grossRevenue: number };
+
+    it('matches the dashboard, keeps empty days, and reconciles payment methods with net plus tax', async () => {
+      await BusinessSettingsModel.updateOne({}, { $set: { taxEnabled: true, taxPercentage: 10 } }, { upsert: true });
+      const { accessToken: cashierToken } = await createCashier();
+      const { accessToken: adminToken } = await createAdmin();
+      const pkg = await createPlayPackage({ price: 80000 });
+
+      await payBill(cashierToken, pkg.id, { paymentMethod: 'CASH' });
+      await payBill(cashierToken, pkg.id, { paymentMethod: 'CARD', discount: { type: 'PERCENTAGE', value: 10 } });
+      const refunded = await payBill(cashierToken, pkg.id, { paymentMethod: 'CASH' });
+      await request(app)
+        .post(`${API}/bills/${refunded.id}/refund`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ reason: 'Unwell' });
+      const earlier = await payBill(cashierToken, pkg.id, { paymentMethod: 'CASH' });
+      const threeDaysAgo = DateTime.now().setZone(TIMEZONE).minus({ days: 3 }).set({ hour: 12 }).toJSDate();
+      await BillModel.updateOne({ _id: earlier.id }, { $set: { paidAt: threeDaysAgo } });
+
+      const from = businessDate(6);
+      const to = businessDate();
+      const [summary, dashboard] = await Promise.all([
+        get(`/reports/period-summary?from=${from}&to=${to}`, adminToken),
+        get(`/dashboard/summary?from=${from}&to=${to}`, adminToken),
+      ]);
+
+      expect(summary.status).toBe(200);
+      const report = summary.body.data;
+      expect(report.groupBy).toBe('day');
+      expect(report.totals).toEqual(dashboard.body.data);
+
+      const buckets: Bucket[] = report.buckets;
+      expect(buckets).toHaveLength(7);
+      expect(buckets.map((bucket) => bucket.label)).toEqual([6, 5, 4, 3, 2, 1, 0].map((days) => businessDate(days)));
+      expect(buckets.find((bucket) => bucket.label === businessDate(5))?.billCount).toBe(0);
+      expect(buckets.find((bucket) => bucket.label === businessDate(3))?.billCount).toBe(1);
+
+      const sum = (key: keyof Bucket) => buckets.reduce((total, bucket) => total + (bucket[key] as number), 0);
+      expect(sum('netRevenue')).toBe(report.totals.netRevenue);
+      expect(sum('billCount')).toBe(report.totals.paidBillsCount + report.totals.refundedBillsCount);
+      expect(report.totalsRow.netRevenue).toBe(report.totals.netRevenue);
+
+      const methods = sum('cashAmount') + sum('cardAmount') + sum('bankTransferAmount') + sum('otherAmount');
+      expect(sum('tax')).toBeGreaterThan(0);
+      expect(methods).toBe(report.totals.netRevenue + sum('tax'));
+    });
+
+    it('groups by ISO week and accepts the last_week preset', async () => {
+      const { accessToken: cashierToken } = await createCashier();
+      const { accessToken: adminToken } = await createAdmin();
+      const pkg = await createPlayPackage({ price: 50000 });
+
+      const bill = await payBill(cashierToken, pkg.id);
+      const lastWeek = DateTime.now().setZone(TIMEZONE).minus({ weeks: 1 }).startOf('week').plus({ days: 2, hours: 12 });
+      await BillModel.updateOne({ _id: bill.id }, { $set: { paidAt: lastWeek.toJSDate() } });
+
+      const res = await get('/reports/period-summary?period=last_week&groupBy=week', adminToken);
+      expect(res.status).toBe(200);
+      expect(res.body.data.buckets).toHaveLength(1);
+      expect(res.body.data.buckets[0]).toMatchObject({
+        label: lastWeek.toFormat("kkkk-'W'WW"),
+        billCount: 1,
+        grossRevenue: 50000,
+      });
+    });
+
+    it('exports the period table with a TOTAL row, and each breakdown as its own file', async () => {
+      const { accessToken: cashierToken } = await createCashier();
+      const { accessToken: adminToken, user: admin } = await createAdmin();
+      const pkg = await createPlayPackage({ price: 80000 });
+      await payBill(cashierToken, pkg.id);
+
+      const today = businessDate();
+      const csv = await get(`/reports/period-summary?from=${today}&to=${today}&format=csv`, adminToken);
+      expect(csv.status).toBe(200);
+      expect(csv.headers['content-disposition']).toContain(`kpa-period-summary-period_${today}_${today}.csv`);
+      const lines = csv.text.replace('\uFEFF', '').trim().split('\r\n');
+      expect(lines[0].startsWith('Period,From,To,Bills')).toBe(true);
+      expect(lines).toHaveLength(3);
+      expect(lines[1].startsWith(`${today},`)).toBe(true);
+      expect(lines[2].startsWith(`TOTAL,${today},${today},1,`)).toBe(true);
+      expect(lines[2]).toContain('800.00');
+
+      const cashiers = await get(`/reports/period-summary?from=${today}&to=${today}&format=csv&breakdown=cashier`, adminToken);
+      expect(cashiers.headers['content-disposition']).toContain('kpa-period-summary-cashier_');
+      expect(cashiers.text).toContain('Test Cashier');
+
+      const audits = await AuditLogModel.find({ action: 'REPORT_EXPORTED', userId: admin._id, entityId: 'period-summary' }).lean();
+      expect(audits.map((log) => (log.metadata as { breakdown: string }).breakdown).sort()).toEqual(['cashier', 'period']);
+    });
+  });
 });

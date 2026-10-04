@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { NAMED_PERIODS } from '../../common/utils/dateRange';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
@@ -7,7 +8,7 @@ import { ExceptionType } from './reports.types';
 const businessDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
 const rangeShape = {
-  period: z.enum(['today', 'yesterday', 'this_week', 'this_month', 'this_year']).optional(),
+  period: z.enum(NAMED_PERIODS).optional(),
   from: businessDate.optional(),
   to: businessDate.optional(),
 };
@@ -50,4 +51,11 @@ export const sessionReportQuerySchema = z.object({
   ...exportShape,
   ...pageShape,
   status: z.nativeEnum(PlaySessionStatus).optional(),
+});
+
+export const periodSummaryQuerySchema = z.object({
+  ...rangeShape,
+  format: exportShape.format,
+  groupBy: z.enum(['day', 'week', 'month']).optional(),
+  breakdown: z.enum(['period', 'cashier', 'package', 'product', 'paymentMethod']).default('period'),
 });

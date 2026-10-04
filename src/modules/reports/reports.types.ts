@@ -20,6 +20,7 @@ export const ReportName = {
   BILL_REGISTER: 'bill-register',
   EXCEPTIONS: 'exceptions',
   SESSIONS: 'sessions',
+  PERIOD_SUMMARY: 'period-summary',
 } as const;
 
 export type ReportName = (typeof ReportName)[keyof typeof ReportName];
@@ -223,4 +224,62 @@ export interface SessionReportRow {
   voidReason: string;
   parentName: string;
   phoneNumber: string;
+}
+
+// ---- Period summary ---------------------------------------------------------------
+
+export type SummaryGroupBy = 'day' | 'week' | 'month';
+
+/** Which table a CSV export carries: the per-period rows, or one range-wide breakdown. */
+export type SummaryBreakdown = 'period' | 'cashier' | 'package' | 'product' | 'paymentMethod';
+
+export interface PeriodSummaryQuery extends ReportRangeQuery {
+  groupBy?: SummaryGroupBy;
+  format: ReportFormat;
+  breakdown: SummaryBreakdown;
+}
+
+export interface PeriodBucket {
+  /** `2026-10-06`, `2026-W41` (ISO week) or `2026-10`. `TOTAL` on the totals row. */
+  label: string;
+  /** Business-local dates the bucket covers, clipped to the requested range. */
+  start: string;
+  end: string;
+  /** Revenue-recognized bills: PAID and REFUNDED. */
+  billCount: number;
+  childrenCount: number;
+  grossRevenue: number;
+  discounts: number;
+  refunds: number;
+  netRevenue: number;
+  /** Tax on PAID and REFUNDED bills: cash + card + bank + other = net + tax. */
+  tax: number;
+  /** Bills still PAID, by method. */
+  cashAmount: number;
+  cardAmount: number;
+  bankTransferAmount: number;
+  otherAmount: number;
+  playRevenue: number;
+  groupRevenue: number;
+  productRevenue: number;
+  cancelledCount: number;
+  sessionCount: number;
+  playMinutes: number;
+  minimumAppliedCount: number;
+  voidedCount: number;
+}
+
+export interface PeriodSummaryReport {
+  header: ReportHeader;
+  groupBy: SummaryGroupBy;
+  /** The dashboard summary for the whole range, unchanged. */
+  totals: DashboardSummary;
+  /** Range-wide figures in bucket shape - the CSV's TOTAL row, never a sum of buckets. */
+  totalsRow: PeriodBucket;
+  buckets: PeriodBucket[];
+  paymentMethods: PaymentMethodBreakdown[];
+  cashiers: CashierPerformance[];
+  packages: PackagePerformance[];
+  products: ProductPerformance[];
+  sessions: SessionSummary;
 }

@@ -8,6 +8,7 @@ import {
   billRegisterQuerySchema,
   dailyCloseQuerySchema,
   exceptionsQuerySchema,
+  periodSummaryQuerySchema,
   sessionReportQuerySchema,
 } from './reports.validation';
 
@@ -99,5 +100,33 @@ router.get('/exceptions', validate({ query: exceptionsQuerySchema }), asyncHandl
  *       200: { description: Session rows with pagination in `meta` }
  */
 router.get('/sessions', validate({ query: sessionReportQuerySchema }), asyncHandler(reportsController.sessions));
+
+/**
+ * @openapi
+ * /reports/period-summary:
+ *   get:
+ *     summary: Weekly, monthly or any-range summary, bucketed by day, week or month
+ *     description: >
+ *       Totals equal the dashboard summary for the same range. Buckets include empty days;
+ *       weeks are ISO weeks (Monday start). `format=csv` exports one flat table, chosen by
+ *       `breakdown`: the per-period rows plus a TOTAL row (default), or the cashier,
+ *       package, product or payment-method table for the whole range.
+ *     tags: [Reports]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: query, name: period, schema: { type: string, enum: [today, yesterday, this_week, last_week, this_month, last_month, this_year] } }
+ *       - { in: query, name: from, schema: { type: string } }
+ *       - { in: query, name: to, schema: { type: string } }
+ *       - { in: query, name: groupBy, schema: { type: string, enum: [day, week, month] } }
+ *       - { in: query, name: format, schema: { type: string, enum: [json, csv] } }
+ *       - { in: query, name: breakdown, schema: { type: string, enum: [period, cashier, package, product, paymentMethod] } }
+ *     responses:
+ *       200: { description: Totals, buckets and breakdown tables }
+ */
+router.get(
+  '/period-summary',
+  validate({ query: periodSummaryQuerySchema }),
+  asyncHandler(reportsController.periodSummary),
+);
 
 export const reportRoutes = router;

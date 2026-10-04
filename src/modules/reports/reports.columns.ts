@@ -1,7 +1,19 @@
 import { formatBusinessDate } from '../../common/utils/dateRange';
 import { formatMinorAsDecimal } from '../../common/utils/money';
 import type { CsvColumn } from './reports.csv';
-import type { BillLineRow, BillRegisterRow, ExceptionRow, SessionReportRow } from './reports.types';
+import type {
+  BillLineRow,
+  BillRegisterRow,
+  ExceptionRow,
+  PeriodBucket,
+  SessionReportRow,
+} from './reports.types';
+import type {
+  CashierPerformance,
+  PackagePerformance,
+  PaymentMethodBreakdown,
+  ProductPerformance,
+} from '../dashboard/dashboard.types';
 
 /**
  * Column layouts for every CSV export. Money is written as plain decimals in major units
@@ -99,4 +111,66 @@ export function sessionColumns(timezone: string, includeContact: boolean): CsvCo
   ];
   if (includeContact) columns.push({ header: 'Parent name', value: (row) => row.parentName });
   return columns;
+}
+
+export function periodSummaryColumns(): CsvColumn<PeriodBucket>[] {
+  return [
+    { header: 'Period', value: (row) => row.label },
+    { header: 'From', kind: 'raw', value: (row) => row.start },
+    { header: 'To', kind: 'raw', value: (row) => row.end },
+    { header: 'Bills', kind: 'raw', value: (row) => row.billCount },
+    { header: 'Children', kind: 'raw', value: (row) => row.childrenCount },
+    { header: 'Gross', kind: 'raw', value: (row) => money(row.grossRevenue) },
+    { header: 'Discounts', kind: 'raw', value: (row) => money(row.discounts) },
+    { header: 'Refunds', kind: 'raw', value: (row) => money(row.refunds) },
+    { header: 'Net', kind: 'raw', value: (row) => money(row.netRevenue) },
+    { header: 'Tax', kind: 'raw', value: (row) => money(row.tax) },
+    { header: 'Cash', kind: 'raw', value: (row) => money(row.cashAmount) },
+    { header: 'Card', kind: 'raw', value: (row) => money(row.cardAmount) },
+    { header: 'Bank transfer', kind: 'raw', value: (row) => money(row.bankTransferAmount) },
+    { header: 'Other', kind: 'raw', value: (row) => money(row.otherAmount) },
+    { header: 'Play', kind: 'raw', value: (row) => money(row.playRevenue) },
+    { header: 'Group', kind: 'raw', value: (row) => money(row.groupRevenue) },
+    { header: 'Products', kind: 'raw', value: (row) => money(row.productRevenue) },
+    { header: 'Cancelled bills', kind: 'raw', value: (row) => row.cancelledCount },
+    { header: 'Sessions', kind: 'raw', value: (row) => row.sessionCount },
+    { header: 'Play minutes', kind: 'raw', value: (row) => row.playMinutes },
+    { header: 'Minimum applied', kind: 'raw', value: (row) => row.minimumAppliedCount },
+    { header: 'Tickets voided', kind: 'raw', value: (row) => row.voidedCount },
+  ];
+}
+
+export function cashierBreakdownColumns(): CsvColumn<CashierPerformance>[] {
+  return [
+    { header: 'Cashier', value: (row) => row.cashierName },
+    { header: 'Bills', kind: 'raw', value: (row) => row.billCount },
+    { header: 'Revenue', kind: 'raw', value: (row) => money(row.revenue) },
+    { header: 'Average bill', kind: 'raw', value: (row) => money(row.averageBillValue) },
+    { header: 'Discounts given', kind: 'raw', value: (row) => money(row.discountsGiven) },
+    { header: 'Cancelled', kind: 'raw', value: (row) => row.cancelledCount },
+  ];
+}
+
+export function packageBreakdownColumns(): CsvColumn<PackagePerformance>[] {
+  return [
+    { header: 'Package', value: (row) => row.packageName },
+    { header: 'Children', kind: 'raw', value: (row) => row.quantitySold },
+    { header: 'Revenue', kind: 'raw', value: (row) => money(row.revenue) },
+  ];
+}
+
+export function productBreakdownColumns(): CsvColumn<ProductPerformance>[] {
+  return [
+    { header: 'Product', value: (row) => row.productName },
+    { header: 'Units', kind: 'raw', value: (row) => row.quantitySold },
+    { header: 'Revenue', kind: 'raw', value: (row) => money(row.revenue) },
+  ];
+}
+
+export function paymentMethodBreakdownColumns(): CsvColumn<PaymentMethodBreakdown>[] {
+  return [
+    { header: 'Payment method', value: (row) => row.paymentMethod },
+    { header: 'Bills', kind: 'raw', value: (row) => row.count },
+    { header: 'Amount', kind: 'raw', value: (row) => money(row.amount) },
+  ];
 }

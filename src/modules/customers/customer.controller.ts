@@ -1,7 +1,13 @@
 import type { Request, Response } from 'express';
 import { customerService } from './customer.service';
+import { customerInsightsService } from './customerInsights.service';
 import { sendSuccess } from '../../common/utils/apiResponse';
-import type { CreateCustomerInput, UpdateCustomerInput, ListCustomersQuery } from './customer.types';
+import type {
+  CreateCustomerInput,
+  UpdateCustomerInput,
+  ListCustomersQuery,
+  ListCustomerVisitsQuery,
+} from './customer.types';
 
 export const customerController = {
   async create(req: Request, res: Response): Promise<void> {
@@ -29,6 +35,17 @@ export const customerController = {
     const { phoneNumber } = req.query as unknown as { phoneNumber: string };
     const customers = await customerService.searchByPhoneNumber(phoneNumber);
     sendSuccess(res, customers);
+  },
+
+  async getProfile(req: Request, res: Response): Promise<void> {
+    const profile = await customerInsightsService.getProfile(req.params.id);
+    sendSuccess(res, profile);
+  },
+
+  async listVisits(req: Request, res: Response): Promise<void> {
+    const query = req.query as unknown as ListCustomerVisitsQuery;
+    const { visits, meta } = await customerInsightsService.listVisits(req.params.id, query);
+    sendSuccess(res, visits, { meta });
   },
 
   async getChildren(req: Request, res: Response): Promise<void> {

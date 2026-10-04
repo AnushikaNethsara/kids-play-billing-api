@@ -37,7 +37,7 @@ const MONGO_FORMAT: Record<SummaryGroupBy, string> = {
   week: '%G-W%V',
   month: '%Y-%m',
 };
-const LUXON_FORMAT: Record<SummaryGroupBy, string> = {
+export const LUXON_FORMAT: Record<SummaryGroupBy, string> = {
   day: 'yyyy-MM-dd',
   week: "kkkk-'W'WW",
   month: 'yyyy-MM',

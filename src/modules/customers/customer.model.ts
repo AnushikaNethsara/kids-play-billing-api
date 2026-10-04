@@ -29,6 +29,12 @@ const customerSchema = new Schema<CustomerDocument>(
 );
 
 // Cashiers search returning customers by phone number at the point of sale.
-customerSchema.index({ phoneNumber: 1 });
+// One customer per family. Partial, because a customer created by hand may have no
+// number yet, and any number of those is fine. Phones are normalised before they get
+// here (`common/utils/phone.ts`), so spelling cannot split a family across two records.
+customerSchema.index(
+  { phoneNumber: 1 },
+  { unique: true, partialFilterExpression: { phoneNumber: { $gt: '' } } },
+);
 
 export const CustomerModel = model<CustomerDocument>('Customer', customerSchema);

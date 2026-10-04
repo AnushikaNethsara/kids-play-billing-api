@@ -3,6 +3,8 @@
  * file as ANSI and mangles every Sinhala or Tamil name), CRLF line ends, RFC 4180 quoting.
  */
 
+import { toLocalPhone } from '../../common/utils/phone';
+
 export const CSV_BOM = '﻿';
 const LINE_END = '\r\n';
 
@@ -52,7 +54,8 @@ export function csvRowLine<T>(columns: CsvColumn<T>[], row: T): string {
  */
 export function maskPhone(phone: string | null | undefined): string {
   if (!phone) return '';
-  const digits = phone.trim();
+  // Masked in the local form a cashier recognises, not the stored +94 one.
+  const digits = toLocalPhone(phone.trim());
   if (digits.length <= 6) return '*'.repeat(digits.length);
   return `${digits.slice(0, 3)}${'*'.repeat(digits.length - 6)}${digits.slice(-3)}`;
 }

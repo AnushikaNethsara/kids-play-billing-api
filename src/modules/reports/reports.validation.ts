@@ -53,6 +53,12 @@ export const sessionReportQuerySchema = z.object({
   status: z.nativeEnum(PlaySessionStatus).optional(),
 });
 
+export const customerReportQuerySchema = z.object({
+  ...rangeShape,
+  format: exportShape.format,
+  groupBy: z.enum(['day', 'week', 'month']).optional(),
+});
+
 export const periodSummaryQuerySchema = z.object({
   ...rangeShape,
   format: exportShape.format,

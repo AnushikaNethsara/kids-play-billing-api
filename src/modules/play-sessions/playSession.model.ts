@@ -200,7 +200,7 @@ playSessionSchema.index({ ticketCode: 1 }, { unique: true });
 // The "currently playing" board - the most frequently run query in the system.
 playSessionSchema.index({ status: 1, checkInAt: -1 });
 // Finding a family's ticket when the printed slip has been lost.
-playSessionSchema.index({ phoneNumber: 1 });
+playSessionSchema.index({ phoneNumber: 1, checkInAt: -1 });
 // Session history listings.
 playSessionSchema.index({ checkInAt: -1 });
 // Reopening sessions when their bill is cancelled.

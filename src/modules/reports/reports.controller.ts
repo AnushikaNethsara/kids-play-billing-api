@@ -11,6 +11,7 @@ import {
   billLineColumns,
   billRegisterColumns,
   cashierBreakdownColumns,
+  customerReportColumns,
   exceptionColumns,
   packageBreakdownColumns,
   paymentMethodBreakdownColumns,
@@ -23,6 +24,7 @@ import {
   type BillLineRow,
   type BillRegisterQuery,
   type BillRegisterRow,
+  type CustomerReportQuery,
   type DailyCloseQuery,
   type ExceptionsQuery,
   type PeriodSummaryQuery,
@@ -104,6 +106,24 @@ async function sendCsv<T>(req: Request, res: Response, file: CsvExport<T>): Prom
 }
 
 export const reportsController = {
+  async customers(req: Request, res: Response): Promise<void> {
+    const query = req.query as unknown as CustomerReportQuery;
+    const { range, report } = await reportsService.getCustomerReport(query, requireActor(req));
+
+    if (query.format !== 'csv') {
+      sendSuccess(res, report);
+      return;
+    }
+    // The bucket table only: aggregate figures, never a phone number.
+    await sendCsv(req, res, {
+      report: ReportName.CUSTOMERS,
+      range,
+      columns: customerReportColumns(),
+      rows: fromArray(report.newVsReturning),
+      options: { groupBy: report.groupBy },
+    });
+  },
+
   async periodSummary(req: Request, res: Response): Promise<void> {
     const query = req.query as unknown as PeriodSummaryQuery;
     const { range, report } = await reportsService.getPeriodSummary(query, requireActor(req));

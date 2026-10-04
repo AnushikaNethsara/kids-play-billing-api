@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { phoneNumberInputSchema } from '../../common/utils/phone';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { BillItemKind } from '../../common/constants/billItemKind';
@@ -65,7 +66,7 @@ export const createBillSchema = z.object({
     .object({
       customerId: objectIdSchema.optional(),
       parentName: z.string().trim().max(100).optional(),
-      phoneNumber: z.string().trim().max(20).optional(),
+      phoneNumber: phoneNumberInputSchema.optional(),
     })
     .optional(),
   items: z.array(createBillItemSchema).min(1, 'At least one bill item is required'),
@@ -85,7 +86,7 @@ export const createBillFromSessionsSchema = z.object({
     .object({
       customerId: objectIdSchema.optional(),
       parentName: z.string().trim().max(100).optional(),
-      phoneNumber: z.string().trim().max(20).optional(),
+      phoneNumber: phoneNumberInputSchema.optional(),
     })
     .optional(),
   paymentMethod: z.nativeEnum(PaymentMethod).optional(),
@@ -98,7 +99,7 @@ export const updateBillSchema = z
       .object({
         customerId: objectIdSchema.optional(),
         parentName: z.string().trim().max(100).optional(),
-        phoneNumber: z.string().trim().max(20).optional(),
+        phoneNumber: phoneNumberInputSchema.optional(),
       })
       .optional(),
     items: z.array(createBillItemSchema).min(1).optional(),

@@ -80,6 +80,15 @@ export const CHILDREN_ON_BILL = {
  */
 export const SESSION_CHILD_COUNT = { $ifNull: ['$childCount', 1] } as const;
 
+/**
+ * The children on one play session, one name each, as an expression over a PlaySession
+ * document - ready to `$unwind`. A family ticket lists them in `childNames`; a ticket
+ * from before family tickets has only `childName`.
+ */
+export const SESSION_CHILD_NAMES = {
+  $cond: [{ $gt: [{ $size: { $ifNull: ['$childNames', []] } }, 0] }, '$childNames', ['$childName']],
+} as const;
+
 /** After `$unwind: '$items'`: keeps only the lines that are a child on a play package. */
 export const PLAY_LINES_ONLY = {
   $match: { 'items.kind': { $nin: [BillItemKind.GROUP, BillItemKind.PRODUCT] } },

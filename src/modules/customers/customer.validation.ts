@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { phoneNumberInputSchema } from '../../common/utils/phone';
 
 export const createCustomerSchema = z.object({
   parentName: z.string().trim().max(100).optional(),
-  phoneNumber: z.string().trim().max(20).optional(),
+  phoneNumber: phoneNumberInputSchema.optional(),
   email: z.string().trim().email().toLowerCase().optional().or(z.literal('')),
   notes: z.string().trim().max(500).optional(),
 });
@@ -10,7 +11,7 @@ export const createCustomerSchema = z.object({
 export const updateCustomerSchema = z
   .object({
     parentName: z.string().trim().max(100).optional(),
-    phoneNumber: z.string().trim().max(20).optional(),
+    phoneNumber: phoneNumberInputSchema.optional(),
     email: z.string().trim().email().toLowerCase().optional().or(z.literal('')),
     notes: z.string().trim().max(500).optional(),
   })
@@ -31,5 +32,10 @@ export const searchCustomerQuerySchema = z.object({
 });
 
 export const childrenQuerySchema = z.object({
-  phoneNumber: z.string().trim().min(1, 'phoneNumber query parameter is required'),
+  phoneNumber: phoneNumberInputSchema.refine(Boolean, 'phoneNumber query parameter is required'),
+});
+
+export const listCustomerVisitsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
 });

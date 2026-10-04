@@ -860,15 +860,22 @@ export const billService = {
     }
 
     if (updated.customerId || updated.phoneNumber) {
-      await customerService.recordVisit(
-        {
-          id: updated.customerId ? updated.customerId.toString() : undefined,
-          parentName: updated.parentName || undefined,
-          phoneNumber: updated.phoneNumber || undefined,
-        },
-        totals.grandTotal,
-        paidAt,
-      );
+      const customerId = await customerService.ensureCustomer({
+        id: updated.customerId ? updated.customerId.toString() : undefined,
+        parentName: updated.parentName || undefined,
+        phoneNumber: updated.phoneNumber || undefined,
+      });
+      if (customerId) {
+        // Linked here, at payment, because a cashier rarely picks a customer by hand: the
+        // phone number typed at the till is what ties most bills - and the tickets they
+        // paid for - to a family.
+        if (!updated.customerId) {
+          await billRepository.setCustomerIdIfUnset(updated._id, customerId);
+          updated.customerId = new Types.ObjectId(customerId);
+        }
+        await playSessionRepository.setCustomerIdByBillId(updated._id, customerId);
+        await customerService.recomputeStats(customerId);
+      }
     }
 
     return toPublicBill(updated);
@@ -913,6 +920,10 @@ export const billService = {
       await playSessionRepository.reopen(session._id);
     }
 
+    // A paid bill counted towards the family's visits and spend; cancelling it must take
+    // that back. A draft never reached them, so there is nothing to correct.
+    if (updated.paidAt) await customerService.recomputeStatsForBill(updated);
+
     await auditLogService.record({
       userId: actor.id,
       userName: actor.name,
@@ -949,6 +960,9 @@ export const billService = {
     if (!updated) {
       throw new InvalidStateError('Only paid bills can be refunded, or this bill was already refunded');
     }
+
+    // Still a visit - the family came and played - but no longer money they spent.
+    await customerService.recomputeStatsForBill(updated);
 
     await auditLogService.record({
       userId: actor.id,
@@ -1019,21 +1033,9 @@ export const billService = {
     // sessions too or a test checkout would still count towards play hours and occupancy.
     const sessionsUpdated = await playSessionRepository.setTestFlagByBillId(updated.id, isTestBill);
 
-    // Completion already added this bill to the parent's visit count and lifetime spend.
-    // Excluding it from business income has to unwind that as well, otherwise the customer
-    // record keeps reporting money the business never took. Keyed off `paidAt` because
-    // that is exactly the condition under which recordVisit ran - a bill cancelled while
-    // still a draft never reached it.
-    if (updated.paidAt && (updated.customerId || updated.phoneNumber)) {
-      const sign = isTestBill ? -1 : 1;
-      await customerService.adjustVisitStats(
-        {
-          id: updated.customerId ? updated.customerId.toString() : undefined,
-          phoneNumber: updated.phoneNumber || undefined,
-        },
-        { visitCount: sign, totalSpent: sign * updated.grandTotal },
-      );
-    }
+    // A test bill is not a visit and not spend, so the family's figures are rebuilt
+    // without it - or with it again, when the flag is taken off.
+    if (updated.paidAt) await customerService.recomputeStatsForBill(updated);
 
     await auditLogService.record({
       userId: actor.id,

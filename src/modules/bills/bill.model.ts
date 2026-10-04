@@ -235,7 +235,8 @@ billSchema.index({ status: 1, paidAt: -1 });
 // Cashier performance reports filter by cashier + paidAt range.
 billSchema.index({ cashierId: 1, paidAt: -1 });
 // Customer's phone number lookup on the bill list/search screen.
-billSchema.index({ phoneNumber: 1 });
+// A family's bills, newest first: the customer profile, its visits and its counters.
+billSchema.index({ phoneNumber: 1, paidAt: -1 });
 // Default bill listing sort/filter by creation date.
 billSchema.index({ createdAt: -1 });
 // Payment-method breakdown reports.

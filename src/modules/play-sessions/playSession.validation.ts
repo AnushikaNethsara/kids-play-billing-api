@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { phoneNumberInputSchema } from '../../common/utils/phone';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 
 /**
@@ -64,7 +65,7 @@ export const checkInSchema = z
       .object({
         customerId: z.string().length(24, 'Invalid customer id').optional(),
         parentName: z.string().trim().max(100).optional(),
-        phoneNumber: z.string().trim().max(30).optional(),
+        phoneNumber: phoneNumberInputSchema.optional(),
       })
       .optional(),
     extras: z.array(sessionExtraInputSchema).max(MAX_EXTRAS_PER_SESSION).optional(),

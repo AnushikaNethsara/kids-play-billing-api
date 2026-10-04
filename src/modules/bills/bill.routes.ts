@@ -230,8 +230,16 @@ router.patch(
  *             properties:
  *               paymentMethod: { type: string, enum: [CASH, CARD, BANK_TRANSFER, OTHER] }
  *               paidAmount: { type: integer, description: "Defaults to the grand total if omitted" }
+ *               backdateToCheckout:
+ *                 type: boolean
+ *                 description: >
+ *                   Admin only. Dates the payment (paidAt, and so the bill number and the day
+ *                   revenue counts on) to the bill's checkout time instead of now - for
+ *                   recovering a till checkout abandoned before payment. The time is derived
+ *                   from the bill, never supplied. Sets paymentRecordedAt/By on the bill.
  *     responses:
  *       200: { description: Bill completed, includes receipt-ready data }
+ *       403: { description: backdateToCheckout sent by a non-admin }
  *       409: { description: Bill already completed or not in draft status }
  */
 router.post(

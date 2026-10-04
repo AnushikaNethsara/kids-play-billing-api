@@ -67,6 +67,7 @@ export const updateBillSchema = z
 export const completeBillSchema = z.object({
   paymentMethod: z.nativeEnum(PaymentMethod),
   paidAmount: z.number().int().min(0).optional(),
+  backdateToCheckout: z.boolean().optional(),
 });
 
 export const cancelBillSchema = z.object({

@@ -72,6 +72,17 @@ export interface BillDocument {
   refundReason: string | null;
 
   /**
+   * Set only when an admin recorded the payment after the fact, dated to the checkout
+   * time - the recovery path for a till checkout that was abandoned before payment.
+   * `paidAt` (and so the bill number and the day the revenue counts on) is the checkout
+   * time; these record when the payment was actually entered, and by whom, so the gap is
+   * visible on the bill itself and not only in the audit log. Null on a normal payment.
+   */
+  paymentRecordedAt: Date | null;
+  paymentRecordedBy: Types.ObjectId | null;
+  paymentRecordedByName: string | null;
+
+  /**
    * Marks a bill that was rung up to try the system out rather than to take money from a
    * customer - a staff training run, a printer check, a demo. The bill itself is left
    * completely intact (it keeps its bill number, its receipt and its place in the list),
@@ -149,6 +160,10 @@ const billSchema = new Schema<BillDocument>(
     refundedAt: { type: Date, default: null },
     refundedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     refundReason: { type: String, default: null },
+
+    paymentRecordedAt: { type: Date, default: null },
+    paymentRecordedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    paymentRecordedByName: { type: String, default: null },
 
     isTestBill: { type: Boolean, default: false },
     testMarkedAt: { type: Date, default: null },

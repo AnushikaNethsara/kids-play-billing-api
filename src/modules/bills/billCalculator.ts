@@ -334,6 +334,26 @@ export function priceSessionForPeriod(params: {
   return { ...duration, breakdown: priceSession(params.rate, duration.billedMinutes) };
 }
 
+/**
+ * When this bill's checkout happened - the moment a payment recorded after the fact is
+ * dated to.
+ *
+ * For a session bill that is the latest item `checkOutAt`: the "Time out" already on the
+ * bill and the receipt, and the instant the parent was quoted at. A flat bill has no
+ * checkout time, so it falls back to when the draft was created, which for a till bill is
+ * the same moment give or take a sync.
+ */
+export function checkoutTimeOf(bill: {
+  items: { checkOutAt?: Date | null }[];
+  createdAt: Date;
+}): Date {
+  const checkOutTimes = bill.items
+    .map((item) => item.checkOutAt?.getTime())
+    .filter((time): time is number => typeof time === 'number' && Number.isFinite(time));
+
+  return checkOutTimes.length ? new Date(Math.max(...checkOutTimes)) : bill.createdAt;
+}
+
 export interface BillTotals {
   subtotal: number;
   discount: number;

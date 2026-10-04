@@ -1,6 +1,12 @@
 import { DateTime } from 'luxon';
 import { CounterModel } from './counter.model';
 import { DEFAULT_BILL_NUMBER_PREFIX } from '../../config';
+import { BillModel } from './bill.model';
+
+/** Older than this, `at` is treated as backdated and candidates are checked for reuse. */
+const BACKDATED_THRESHOLD_MS = 60_000;
+/** One second can only realistically hold a handful of bills; this just bounds the loop. */
+const MAX_BACKDATED_ATTEMPTS = 20;
 
 export const billNumberService = {
   /**
@@ -26,16 +32,32 @@ export const billNumberService = {
    * Still sorts chronologically as a plain string, so anything ordering or range-comparing
    * bill numbers keeps working.
    */
-  async generate(timezone: string): Promise<string> {
-    const timeKey = DateTime.now().setZone(timezone).toFormat('yyyyMMdd-HHmmss');
+  async generate(timezone: string, at?: Date): Promise<string> {
+    // Luxon's clock rather than Date's, so a frozen `Settings.now` governs both.
+    const now = DateTime.now();
+    const moment = at ? DateTime.fromJSDate(at) : now;
+    const timeKey = moment.setZone(timezone).toFormat('yyyyMMdd-HHmmss');
     const counterId = `${DEFAULT_BILL_NUMBER_PREFIX}-${timeKey}`;
 
-    const counter = await CounterModel.findOneAndUpdate(
-      { _id: counterId },
-      { $inc: { seq: 1 } },
-      { upsert: true, new: true },
-    ).exec();
+    // A payment dated to an earlier checkout (an admin recovering an abandoned one) can
+    // land on a second whose counter row has already expired - rows only live a day - so
+    // the counter restarts at 1 and may hand out a number a paid bill already holds. Only
+    // then is each candidate checked against the bills themselves; a payment taken now
+    // keeps the single atomic $inc above.
+    const checkExisting = now.toMillis() - moment.toMillis() > BACKDATED_THRESHOLD_MS;
 
-    return counter.seq > 1 ? `${counterId}-${counter.seq}` : counterId;
+    for (let attempt = 0; attempt < MAX_BACKDATED_ATTEMPTS; attempt += 1) {
+      const counter = await CounterModel.findOneAndUpdate(
+        { _id: counterId },
+        { $inc: { seq: 1 } },
+        { upsert: true, new: true },
+      ).exec();
+
+      const candidate = counter.seq > 1 ? `${counterId}-${counter.seq}` : counterId;
+      if (!checkExisting) return candidate;
+      if (!(await BillModel.exists({ billNumber: candidate }))) return candidate;
+    }
+
+    throw new Error(`Could not find a free bill number for ${counterId}`);
   },
 };

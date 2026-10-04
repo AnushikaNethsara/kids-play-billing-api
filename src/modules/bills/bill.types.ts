@@ -60,6 +60,12 @@ export interface UpdateBillInput {
 export interface CompleteBillInput {
   paymentMethod: PaymentMethod;
   paidAmount?: number;
+  /**
+   * Admin-only. Dates the payment to the bill's checkout time instead of now, so a
+   * recovered checkout counts on the day it happened. A flag rather than a timestamp: the
+   * server derives the time from the bill itself, so no caller can pick a date.
+   */
+  backdateToCheckout?: boolean;
 }
 
 export interface CancelBillInput {
@@ -130,6 +136,10 @@ export interface BillPublic {
   refundedAt: Date | null;
   refundedBy: string | null;
   refundReason: string | null;
+  /** Set only on a payment recorded later by an admin and dated to the checkout time. */
+  paymentRecordedAt: Date | null;
+  paymentRecordedBy: string | null;
+  paymentRecordedByName: string | null;
   /** Excluded from every dashboard figure and from the customer's lifetime spend. */
   isTestBill: boolean;
   testMarkedAt: Date | null;

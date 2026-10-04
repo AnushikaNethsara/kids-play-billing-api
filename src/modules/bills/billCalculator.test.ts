@@ -10,6 +10,7 @@ import {
   calculateSessionLineTotal,
   priceSession,
   priceSessionForPeriod,
+  checkoutTimeOf,
 } from './billCalculator';
 import { DiscountType } from '../../common/constants/billStatus';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
@@ -525,5 +526,25 @@ describe('billCalculator', () => {
         125_000,
       );
     });
+  });
+});
+
+describe('checkoutTimeOf', () => {
+  const createdAt = new Date('2026-10-01T08:28:23.931Z');
+
+  it('is the latest item checkout on a session bill', () => {
+    expect(
+      checkoutTimeOf({
+        createdAt,
+        items: [
+          { checkOutAt: new Date('2026-10-01T08:20:00.000Z') },
+          { checkOutAt: new Date('2026-10-01T08:28:23.503Z') },
+        ],
+      }),
+    ).toEqual(new Date('2026-10-01T08:28:23.503Z'));
+  });
+
+  it('falls back to when the draft was created on a flat bill', () => {
+    expect(checkoutTimeOf({ createdAt, items: [{ checkOutAt: null }, {}] })).toEqual(createdAt);
   });
 });

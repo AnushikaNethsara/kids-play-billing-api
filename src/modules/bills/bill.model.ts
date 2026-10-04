@@ -7,19 +7,45 @@ import {
 } from '../../common/constants/pricingModes';
 import { tieredPricingSchema } from '../play-packages/tieredPricing.schema';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { BillItemKind } from '../../common/constants/billItemKind';
 
 export interface BillItemSubdocument {
+  /**
+   * What the line is for - see BillItemKind. Absent on every line written before kinds
+   * existed, all of which were PLAY lines; read it through `resolveItemKind`, never raw.
+   */
+  kind: BillItemKind;
+  /**
+   * The child on a PLAY line. On a PRODUCT line sold onto a play session, the child it was
+   * for; otherwise empty. Unused on a GROUP line, which names the group in `packageName`.
+   */
   childName: string;
-  playPackageId: Types.ObjectId;
+  /** Set on PLAY lines only. */
+  playPackageId: Types.ObjectId | null;
+  /**
+   * The line's printed name, snapshotted: the package on a PLAY line, the product on a
+   * PRODUCT line, and the group (the pre-school's name) on a GROUP line.
+   */
   packageName: string;
   /**
    * For a session-billed item this is the RATE denominator: `unitPrice` buys this many
-   * minutes. For legacy flat-price items it is descriptive only.
+   * minutes. For legacy flat-price items it is descriptive only. On a GROUP line it is
+   * always GROUP_RATE_MINUTES (the rate is per child per hour); 0 on a PRODUCT line.
    */
   durationMinutes: number;
   unitPrice: number;
+  /** Units on a flat line, the headcount on a GROUP line, meaningless on a session line. */
   quantity: number;
   lineTotal: number;
+
+  /** PRODUCT lines only: the product sold. */
+  productId: Types.ObjectId | null;
+  /**
+   * GROUP lines only: when the visit started and how long it lasted. `visitMinutes` is the
+   * time charged for, not the rate denominator - that stays in `durationMinutes`.
+   */
+  visitAt: Date | null;
+  visitMinutes: number | null;
 
   /**
    * Set only on items billed from a timed play session. Null on bills created through
@@ -113,8 +139,11 @@ export type BillHydrated = HydratedDocument<BillDocument>;
 
 const billItemSchema = new Schema<BillItemSubdocument>(
   {
-    childName: { type: String, required: true, trim: true },
-    playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', required: true },
+    kind: { type: String, enum: Object.values(BillItemKind), default: BillItemKind.PLAY },
+    // Not `required`: Mongoose rejects an empty string on a required String, and a product
+    // sold over the counter has no child.
+    childName: { type: String, default: '', trim: true },
+    playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', default: null },
     // Snapshotted at billing time - historical reports must never recompute using the
     // package's current price, since prices change over time.
     packageName: { type: String, required: true },
@@ -122,6 +151,9 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     unitPrice: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1, default: 1 },
     lineTotal: { type: Number, required: true },
+    productId: { type: Schema.Types.ObjectId, ref: 'Product', default: null },
+    visitAt: { type: Date, default: null },
+    visitMinutes: { type: Number, default: null },
     playSessionId: { type: Schema.Types.ObjectId, ref: 'PlaySession', default: null },
     checkInAt: { type: Date, default: null },
     checkOutAt: { type: Date, default: null },
@@ -212,5 +244,8 @@ billSchema.index({ paymentMethod: 1, paidAt: -1 });
 // flag leads this index rather than trailing the revenue one - almost all bills are
 // real, which makes it the cheapest discriminator to apply first.
 billSchema.index({ isTestBill: 1, status: 1, paidAt: -1 });
+// The bills list's kind filter, and the product delete check.
+billSchema.index({ 'items.kind': 1 });
+billSchema.index({ 'items.productId': 1 });
 
 export const BillModel = model<BillDocument>('Bill', billSchema);

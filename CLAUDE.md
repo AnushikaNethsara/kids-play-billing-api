@@ -45,8 +45,10 @@ Feature-based modules under `src/modules/<name>/`, each typically containing
 controllers), `*.controller.ts` (thin, maps req/res to service calls), `*.validation.ts`
 (Zod schemas), `*.routes.ts` (Express router + inline `@openapi` JSDoc), `*.types.ts`.
 
-Modules: `auth`, `users`, `play-packages`, `customers`, `bills`, `dashboard`,
-`settings`, `audit-logs`. `src/routes/index.ts` mounts all of them under `/api/v1`.
+Modules: `auth`, `users`, `play-packages`, `play-sessions`, `products`, `customers`,
+`bills`, `dashboard`, `settings`, `audit-logs`. Bill lines have a `kind` (`PLAY`,
+`GROUP`, `PRODUCT`; a missing kind is `PLAY`). See `../docs/custom-bills.md` before
+touching bill items, dashboard counts or session extras. `src/routes/index.ts` mounts all of them under `/api/v1`.
 Cross-cutting code lives in `src/common/` (errors, logger, money/pagination/date-range
 utils, constants) and `src/middleware/` (auth, RBAC, Zod validation, rate limiting,
 error handling, request-id, CORS/helmet).

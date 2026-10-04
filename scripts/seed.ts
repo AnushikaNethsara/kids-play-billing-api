@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { connectDatabase, disconnectDatabase } from '../src/database/connection';
 import { UserModel } from '../src/modules/users/user.model';
 import { PlayPackageModel } from '../src/modules/play-packages/playPackage.model';
+import { ProductModel } from '../src/modules/products/product.model';
 import { settingsRepository } from '../src/modules/settings/settings.repository';
 import { UserRole } from '../src/common/constants/roles';
 import {
@@ -73,6 +74,25 @@ async function seedPlayPackages() {
   }
 }
 
+// Placeholder prices - an admin sets the real ones from the Products page.
+const SEED_PRODUCTS = [
+  { name: 'Long socks', price: 30000, sortOrder: 1 },
+  { name: 'Half socks', price: 20000, sortOrder: 2 },
+];
+
+async function seedProducts() {
+  for (const product of SEED_PRODUCTS) {
+    const existing = await ProductModel.findOne({ name: product.name });
+    if (existing) {
+      logger.info(`Product "${product.name}" already exists, skipping`);
+      continue;
+    }
+
+    await ProductModel.create({ ...product, description: '', createdBy: null, updatedBy: null });
+    logger.info(`Created product: ${product.name}`);
+  }
+}
+
 async function seedSettings() {
   await settingsRepository.getOrCreate();
   logger.info('Ensured default business settings exist');
@@ -83,6 +103,7 @@ async function run() {
 
   await seedUsers();
   await seedPlayPackages();
+  await seedProducts();
   await seedSettings();
 
   logger.warn(

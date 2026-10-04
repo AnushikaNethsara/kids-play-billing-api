@@ -4,6 +4,7 @@ import type { BusinessSettingsHydrated } from '../settings/settings.model';
 import type { ReceiptData, ReceiptItem } from './receipt.types';
 import { priceSession, type SessionPriceBreakdown } from './billCalculator';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
+import { BillItemKind, resolveItemKind } from '../../common/constants/billItemKind';
 import { resolveSessionRate } from '../play-sessions/playSession.model';
 import { formatMoney } from '../../common/utils/money';
 import {
@@ -55,6 +56,16 @@ function buildTierLines(breakdown: SessionPriceBreakdown): { label: string; amou
   return lines;
 }
 
+/**
+ * A label and its amount on one row when they fit, otherwise the label wrapped and the
+ * amount right-aligned beneath it. `twoColumnLine` alone truncates an over-long row, and on
+ * a 32-column slip the part it cuts off is the money.
+ */
+function labelledAmount(label: string, amount: string, width: number): string[] {
+  if (label.length + amount.length + 1 <= width) return [twoColumnLine(label, amount, width)];
+  return [...wrapText(label, width), twoColumnLine('', amount, width)];
+}
+
 export const receiptService = {
   buildReceiptData(bill: BillHydrated, settings: BusinessSettingsHydrated): ReceiptData {
     const paidMoment = bill.paidAt ? DateTime.fromJSDate(bill.paidAt).setZone(settings.timezone) : null;
@@ -75,14 +86,27 @@ export const receiptService = {
         cashierName: bill.cashierName,
         parentName: bill.parentName,
         items: bill.items.map((item) => {
+          const kind = resolveItemKind(item);
           const receiptItem: ReceiptItem = {
-            childName: item.childName,
+            kind,
+            childName: item.childName ?? '',
             packageName: item.packageName,
             durationMinutes: item.durationMinutes,
             quantity: item.quantity,
             unitPrice: item.unitPrice,
             lineTotal: item.lineTotal,
           };
+
+          if (kind === BillItemKind.GROUP) {
+            if (item.visitAt) {
+              const visit = DateTime.fromJSDate(item.visitAt).setZone(settings.timezone);
+              receiptItem.visitDate = visit.toFormat('dd/MM/yyyy');
+              receiptItem.visitTime = visit.toFormat('hh:mm a');
+            }
+            if (item.visitMinutes) receiptItem.visitDuration = formatDuration(item.visitMinutes);
+            return receiptItem;
+          }
+          if (kind === BillItemKind.PRODUCT) return receiptItem;
 
           // Only session-billed items carry times; legacy flat-price items have none and
           // fall through to the original layout untouched.
@@ -195,6 +219,35 @@ export const receiptService = {
     lines.push(dashLine(width));
 
     for (const item of data.bill.items) {
+      if (item.kind === BillItemKind.GROUP) {
+        // "Group: Sunflower Pre-school", when, then the sum the total is made of, so the
+        // teacher holding the receipt can check it: 20 kids x 2h @300/h.
+        lines.push(...wrapText(`Group: ${item.packageName}`, width));
+        if (item.visitDate) {
+          lines.push(...wrapText(`Visit: ${item.visitDate} ${item.visitTime ?? ''}`.trimEnd(), width));
+        }
+        lines.push(
+          ...labelledAmount(
+            `${item.quantity} kids x ${item.visitDuration ?? ''} @${formatCompactRate(item.unitPrice)}/h`,
+            formatMoney(item.lineTotal),
+            width,
+          ),
+        );
+        continue;
+      }
+
+      if (item.kind === BillItemKind.PRODUCT) {
+        const forChild = item.childName ? ` (${item.childName})` : '';
+        lines.push(
+          ...labelledAmount(
+            `${item.packageName} x ${item.quantity}${forChild}`,
+            formatMoney(item.lineTotal),
+            width,
+          ),
+        );
+        continue;
+      }
+
       lines.push(...wrapText(`Child: ${item.childName}`, width));
 
       // Time-billed item: show the parent what they are actually paying for - when the

@@ -12,6 +12,38 @@ export const ticketCodeSchema = z
   .max(64, 'Ticket code is too long')
   .regex(/^[A-Za-z0-9:_-]+$/, 'Ticket code contains unsupported characters');
 
+/** Same alphabet as a ticket code: both are device-generated idempotency keys. */
+export const extraLocalIdSchema = z
+  .string()
+  .trim()
+  .min(8, 'Extra id is too short')
+  .max(64, 'Extra id is too long')
+  .regex(/^[A-Za-z0-9:_-]+$/, 'Extra id contains unsupported characters');
+
+export const MAX_EXTRAS_PER_SESSION = 20;
+
+export const sessionExtraInputSchema = z.object({
+  localId: extraLocalIdSchema,
+  productId: z.string().length(24, 'Invalid product id'),
+  quantity: z.number().int().min(1).max(100),
+});
+
+export const addSessionExtrasSchema = z.object({
+  extras: z.array(sessionExtraInputSchema).min(1).max(MAX_EXTRAS_PER_SESSION),
+});
+
+export const sessionExtraParamSchema = z.object({
+  ticketCode: ticketCodeSchema,
+  localId: extraLocalIdSchema,
+});
+
+// Optional as a whole: a DELETE usually carries no body at all.
+export const removeSessionExtraSchema = z
+  .object({
+    reason: z.string().trim().max(300).optional(),
+  })
+  .optional();
+
 export const checkInSchema = z.object({
   ticketCode: ticketCodeSchema,
   childName: z.string().trim().min(1).max(100),
@@ -24,6 +56,7 @@ export const checkInSchema = z.object({
       phoneNumber: z.string().trim().max(30).optional(),
     })
     .optional(),
+  extras: z.array(sessionExtraInputSchema).max(MAX_EXTRAS_PER_SESSION).optional(),
 });
 
 export const voidSessionSchema = z.object({

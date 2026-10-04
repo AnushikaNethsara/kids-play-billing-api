@@ -2,12 +2,39 @@ import type { BillStatus, DiscountType } from '../../common/constants/billStatus
 import type { SessionPricingMode, TieredPricing } from '../../common/constants/pricingModes';
 import type { TierHourLine, TierOvertime } from './billCalculator';
 import type { PaymentMethod } from '../../common/constants/paymentMethods';
+import type { BillItemKind } from '../../common/constants/billItemKind';
 
-export interface CreateBillItemInput {
+/** A child on a play package at its flat price. `kind` may be omitted - older clients do. */
+export interface CreatePlayItemInput {
+  kind: typeof BillItemKind.PLAY;
   childName: string;
   playPackageId: string;
   quantity?: number;
 }
+
+/**
+ * A group visit at a negotiated rate. Priced server-side as
+ * `round(ratePerChildPerHour x headcount x visitMinutes / 60)`.
+ */
+export interface CreateGroupItemInput {
+  kind: typeof BillItemKind.GROUP;
+  groupName: string;
+  headcount: number;
+  /** Integer minor units, per child per hour. Entered freely, audited on every bill. */
+  ratePerChildPerHour: number;
+  visitMinutes: number;
+  /** When the visit started. Defaults to now; only an admin may date it in the past. */
+  visitAt?: string;
+}
+
+/** Something sold over the counter. Priced from the product's current price. */
+export interface CreateProductItemInput {
+  kind: typeof BillItemKind.PRODUCT;
+  productId: string;
+  quantity: number;
+}
+
+export type CreateBillItemInput = CreatePlayItemInput | CreateGroupItemInput | CreateProductItemInput;
 
 export interface CreateBillDiscountInput {
   type: DiscountType;
@@ -84,13 +111,21 @@ export interface SetTestBillInput {
 }
 
 export interface BillItemPublic {
+  /** Always present here, resolved to PLAY on lines written before kinds existed. */
+  kind: BillItemKind;
   childName: string;
-  playPackageId: string;
+  /** Null on GROUP and PRODUCT lines. */
+  playPackageId: string | null;
   packageName: string;
   durationMinutes: number;
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  /** PRODUCT lines only. */
+  productId: string | null;
+  /** GROUP lines only: when the visit started and how many minutes were charged. */
+  visitAt: Date | null;
+  visitMinutes: number | null;
   /** Present only on items billed from a timed play session; null on flat-price items. */
   playSessionId: string | null;
   checkInAt: Date | null;
@@ -179,6 +214,8 @@ export interface ListBillsQuery {
    * the other matters. A bill is never a mix of the two.
    */
   isTimed?: boolean;
+  /** Bills carrying at least one line of this kind. */
+  kind?: BillItemKind;
   /**
    * Omitted shows both kinds, which is what the bills screen wants - a test bill is still
    * a real record an admin needs to be able to find. Only the dashboard passes `false`.

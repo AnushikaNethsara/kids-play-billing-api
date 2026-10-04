@@ -3,6 +3,7 @@ import { getSkip } from '../../common/utils/pagination';
 import { escapeRegExp } from '../../common/utils/regex';
 import type { ListBillsQuery } from './bill.types';
 import { BillStatus } from '../../common/constants/billStatus';
+import { BillItemKind } from '../../common/constants/billItemKind';
 
 const SORT_OPTIONS: Record<NonNullable<ListBillsQuery['sort']>, Record<string, 1 | -1>> = {
   newest: { createdAt: -1 },
@@ -84,11 +85,25 @@ export const billRepository = {
       if (filter.to) createdAt.$lte = new Date(filter.to);
       mongoFilter.createdAt = createdAt;
     }
+    const itemConditions: Record<string, unknown>[] = [];
     if (filter.isTimed !== undefined) {
-      // Bills are never a mix of timed and flat lines, so testing the array field is
-      // unambiguous here.
-      mongoFilter['items.playSessionId'] = filter.isTimed ? { $ne: null } : null;
+      // A timed bill is one with any session line. Matched per element because a checkout
+      // also carries product lines (socks sold onto the visit), which have no session - a
+      // plain `items.playSessionId: { $ne: null }` would require every line to have one.
+      const hasSessionLine = { items: { $elemMatch: { playSessionId: { $ne: null } } } };
+      itemConditions.push(filter.isTimed ? hasSessionLine : { $nor: [hasSessionLine] });
     }
+    if (filter.kind) {
+      // Lines written before kinds existed carry no `kind` and are all PLAY lines.
+      itemConditions.push({
+        items: {
+          $elemMatch: {
+            kind: filter.kind === BillItemKind.PLAY ? { $in: [BillItemKind.PLAY, null] } : filter.kind,
+          },
+        },
+      });
+    }
+    if (itemConditions.length > 0) mongoFilter.$and = itemConditions;
     if (filter.isTestBill !== undefined) {
       // `$ne: true` rather than `false`: every bill written before this flag existed has
       // no such field at all, and matching on `false` would silently hide all of them.

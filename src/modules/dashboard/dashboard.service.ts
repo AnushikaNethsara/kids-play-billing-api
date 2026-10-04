@@ -4,6 +4,7 @@ import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
+import { BillItemKind } from '../../common/constants/billItemKind';
 import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { resolveDateRange } from '../../common/utils/dateRange';
@@ -17,6 +18,7 @@ import type {
   YearlyRevenuePoint,
   BillsBreakdown,
   PackagePerformance,
+  ProductPerformance,
   PaymentMethodBreakdown,
   CashierPerformance,
   SessionSummary,
@@ -52,6 +54,43 @@ function revenueRecognizedMatch(start: Date, end: Date) {
   };
 }
 
+/**
+ * A line's kind as an aggregation expression. Lines written before kinds existed carry no
+ * such key in the raw BSON, and every one of them was a PLAY line.
+ */
+const ITEM_KIND = { $ifNull: ['$$item.kind', BillItemKind.PLAY] } as const;
+
+/**
+ * Children through the door on a bill: one per PLAY line, the headcount of a GROUP line,
+ * and nobody for a pair of socks. Counting lines, as this used to, would report a group of
+ * twenty as one child and every pair of socks as another.
+ *
+ * An expression over one bill, not an accumulator: inside `$group` it has to be wrapped in
+ * another `$sum`, because a `$group` `$sum` silently ignores an array operand.
+ */
+const CHILDREN_ON_BILL = {
+  $sum: {
+    $map: {
+      input: '$items',
+      as: 'item',
+      in: {
+        $switch: {
+          branches: [
+            { case: { $eq: [ITEM_KIND, BillItemKind.GROUP] }, then: '$$item.quantity' },
+            { case: { $eq: [ITEM_KIND, BillItemKind.PRODUCT] }, then: 0 },
+          ],
+          default: 1,
+        },
+      },
+    },
+  },
+} as const;
+
+/** After `$unwind: '$items'`: keeps only the lines that are a child on a play package. */
+const PLAY_LINES_ONLY = {
+  $match: { 'items.kind': { $nin: [BillItemKind.GROUP, BillItemKind.PRODUCT] } },
+} as const;
+
 async function resolveRange(query: DashboardQuery) {
   const settings = await settingsService.getRaw();
   const { start, end } = resolveDateRange(settings.timezone, query);
@@ -74,7 +113,7 @@ export const dashboardService = {
           paidBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.PAID] }, 1, 0] } },
           refundedBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, 1, 0] } },
           paidGrandTotalSum: { $sum: { $cond: [{ $eq: ['$status', BillStatus.PAID] }, '$grandTotal', 0] } },
-          childrenServed: { $sum: { $size: '$items' } },
+          childrenServed: { $sum: CHILDREN_ON_BILL },
           cashAmount: { $sum: { $cond: [{ $eq: ['$paymentMethod', PaymentMethod.CASH] }, '$grandTotal', 0] } },
           cashCount: { $sum: { $cond: [{ $eq: ['$paymentMethod', PaymentMethod.CASH] }, 1, 0] } },
           cardAmount: { $sum: { $cond: [{ $eq: ['$paymentMethod', PaymentMethod.CARD] }, '$grandTotal', 0] } },
@@ -99,6 +138,7 @@ export const dashboardService = {
     const [bestSellingPackage] = await BillModel.aggregate([
       { $match: match },
       { $unwind: '$items' },
+      PLAY_LINES_ONLY,
       {
         $group: {
           _id: '$items.playPackageId',
@@ -124,6 +164,25 @@ export const dashboardService = {
       { $sort: { revenue: -1 } },
       { $limit: 1 },
     ]);
+
+    const kindRows = await BillModel.aggregate<{
+      _id: BillItemKind;
+      revenue: number;
+      quantity: number;
+      lines: number;
+    }>([
+      { $match: match },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: { $ifNull: ['$items.kind', BillItemKind.PLAY] },
+          revenue: { $sum: '$items.lineTotal' },
+          quantity: { $sum: '$items.quantity' },
+          lines: { $sum: 1 },
+        },
+      },
+    ]);
+    const byKind = new Map(kindRows.map((row) => [row._id, row]));
 
     const grossRevenue = totals?.grossRevenue ?? 0;
     const discounts = totals?.discounts ?? 0;
@@ -161,6 +220,16 @@ export const dashboardService = {
             billCount: topCashier.billCount,
           }
         : null,
+      revenueByKind: {
+        play: byKind.get(BillItemKind.PLAY)?.revenue ?? 0,
+        group: byKind.get(BillItemKind.GROUP)?.revenue ?? 0,
+        product: byKind.get(BillItemKind.PRODUCT)?.revenue ?? 0,
+      },
+      groupVisits: {
+        count: byKind.get(BillItemKind.GROUP)?.lines ?? 0,
+        headcount: byKind.get(BillItemKind.GROUP)?.quantity ?? 0,
+      },
+      productUnitsSold: byKind.get(BillItemKind.PRODUCT)?.quantity ?? 0,
     };
   },
 
@@ -180,7 +249,7 @@ export const dashboardService = {
           discounts: { $sum: '$discount' },
           refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
           billCount: { $sum: 1 },
-          childrenCount: { $sum: { $size: '$items' } },
+          childrenCount: { $sum: CHILDREN_ON_BILL },
         },
       },
       { $sort: { _id: 1 } },
@@ -224,6 +293,7 @@ export const dashboardService = {
     const rows = await BillModel.aggregate([
       { $match: revenueRecognizedMatch(start, end) },
       { $unwind: '$items' },
+      PLAY_LINES_ONLY,
       {
         $group: {
           _id: '$items.playPackageId',
@@ -238,6 +308,33 @@ export const dashboardService = {
     return rows.map((row) => ({
       playPackageId: row._id.toString(),
       packageName: row.packageName,
+      quantitySold: row.quantitySold,
+      revenue: row.revenue,
+    }));
+  },
+
+  /** Counter sales per product, grouped by id so a renamed product stays one row. */
+  async getProductPerformance(query: DashboardQuery): Promise<ProductPerformance[]> {
+    const { start, end } = await resolveRange(query);
+
+    const rows = await BillModel.aggregate([
+      { $match: revenueRecognizedMatch(start, end) },
+      { $unwind: '$items' },
+      { $match: { 'items.kind': BillItemKind.PRODUCT } },
+      {
+        $group: {
+          _id: '$items.productId',
+          productName: { $last: '$items.packageName' },
+          quantitySold: { $sum: '$items.quantity' },
+          revenue: { $sum: '$items.lineTotal' },
+        },
+      },
+      { $sort: { revenue: -1 } },
+    ]);
+
+    return rows.map((row) => ({
+      productId: row._id ? row._id.toString() : '',
+      productName: row.productName,
       quantitySold: row.quantitySold,
       revenue: row.revenue,
     }));

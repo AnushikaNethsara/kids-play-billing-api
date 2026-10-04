@@ -2,6 +2,29 @@ import type { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import type { SessionPricingMode, TieredPricing } from '../../common/constants/pricingModes';
 import type { SessionPriceBreakdown } from '../bills/billCalculator';
 
+/** A product sold onto a playing child, as the device sends it. */
+export interface SessionExtraInput {
+  /** Device-generated; makes a retried add a no-op rather than a second sale. */
+  localId: string;
+  productId: string;
+  quantity: number;
+}
+
+export interface AddSessionExtrasInput {
+  extras: SessionExtraInput[];
+}
+
+export interface PlaySessionExtraPublic {
+  localId: string;
+  productId: string;
+  productName: string;
+  unitPrice: number;
+  quantity: number;
+  lineTotal: number;
+  addedAt: Date;
+  addedByCashierName: string;
+}
+
 export interface CheckInInput {
   ticketCode: string;
   childName: string;
@@ -13,6 +36,8 @@ export interface CheckInInput {
     parentName?: string;
     phoneNumber?: string;
   };
+  /** Socks and the like handed over at the gate, charged at checkout. */
+  extras?: SessionExtraInput[];
 }
 
 export interface VoidSessionInput {
@@ -57,6 +82,10 @@ export interface PlaySessionPublic {
   checkOutCashierName: string | null;
   voidedAt: Date | null;
   voidReason: string | null;
+  /** Products sold onto this visit; charged at checkout on top of the time. */
+  extras: PlaySessionExtraPublic[];
+  /** What `extras` add up to. Not included in the quote, which prices time only. */
+  extrasTotal: number;
   /** True once the bill this session was checked out into was marked as a test bill. */
   isTestBill: boolean;
   createdAt: Date;

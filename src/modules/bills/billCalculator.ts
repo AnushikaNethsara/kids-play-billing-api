@@ -7,6 +7,7 @@ import {
   type TieredPricing,
 } from '../../common/constants/pricingModes';
 import { UserRole } from '../../common/constants/roles';
+import { GROUP_RATE_MINUTES } from '../../common/constants/billItemKind';
 import { PaymentError, ValidationError } from '../../common/errors';
 import { calculatePercentage, sumMinorUnits } from '../../common/utils/money';
 import type { BillItemPublic } from './bill.types';
@@ -533,14 +534,48 @@ export function priceSessionForPeriod(params: {
  * the same moment give or take a sync.
  */
 export function checkoutTimeOf(bill: {
-  items: { checkOutAt?: Date | null }[];
+  items: { checkOutAt?: Date | null; visitAt?: Date | null; visitMinutes?: number | null }[];
   createdAt: Date;
 }): Date {
+  // A group line has no check-out, but its visit has an end, and that is the moment the
+  // group would have paid at the till.
   const checkOutTimes = bill.items
-    .map((item) => item.checkOutAt?.getTime())
+    .map((item) =>
+      item.checkOutAt
+        ? item.checkOutAt.getTime()
+        : item.visitAt
+          ? item.visitAt.getTime() + (item.visitMinutes ?? 0) * MILLISECONDS_PER_MINUTE
+          : undefined,
+    )
     .filter((time): time is number => typeof time === 'number' && Number.isFinite(time));
 
   return checkOutTimes.length ? new Date(Math.max(...checkOutTimes)) : bill.createdAt;
+}
+
+/**
+ * A group visit at a negotiated rate: `ratePerChildPerHour` buys one child one hour, and
+ * any other length is pro-rata from it - the same shape as a PRORATA play package, with
+ * the headcount as a multiplier. 20 children x LKR 300.00 x 2h -> LKR 12,000.00.
+ *
+ * Multiplied out before the single division, so the only rounding is the last step and a
+ * whole-hour visit is always exact.
+ */
+export function priceGroupVisit(params: {
+  ratePerChildPerHour: number;
+  headcount: number;
+  visitMinutes: number;
+}): number {
+  const { ratePerChildPerHour, headcount, visitMinutes } = params;
+  if (!Number.isInteger(ratePerChildPerHour) || ratePerChildPerHour < 0) {
+    throw new ValidationError('The group rate must be a whole number of minor units');
+  }
+  if (!Number.isInteger(headcount) || headcount < 1) {
+    throw new ValidationError('Headcount must be at least 1');
+  }
+  if (!Number.isInteger(visitMinutes) || visitMinutes < 1) {
+    throw new ValidationError('The visit must be at least a minute long');
+  }
+  return Math.round((ratePerChildPerHour * headcount * visitMinutes) / GROUP_RATE_MINUTES);
 }
 
 export interface BillTotals {

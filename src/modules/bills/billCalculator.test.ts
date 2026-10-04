@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  priceGroupVisit,
   calculateSubtotal,
   calculateDiscountAmount,
   calculateTax,
@@ -554,5 +555,23 @@ describe('checkoutTimeOf', () => {
 
   it('falls back to when the draft was created on a flat bill', () => {
     expect(checkoutTimeOf({ createdAt, items: [{ checkOutAt: null }, {}] })).toEqual(createdAt);
+  });
+});
+
+describe('priceGroupVisit', () => {
+  it('multiplies headcount, rate and hours', () => {
+    // 20 children x LKR 300.00 x 2h
+    expect(priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 20, visitMinutes: 120 })).toBe(1200000);
+  });
+
+  it('prices part hours pro-rata and rounds only once', () => {
+    expect(priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 20, visitMinutes: 90 })).toBe(900000);
+    expect(priceGroupVisit({ ratePerChildPerHour: 33333, headcount: 7, visitMinutes: 50 })).toBe(194443);
+  });
+
+  it('refuses inputs that cannot be a real visit', () => {
+    expect(() => priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 0, visitMinutes: 60 })).toThrow();
+    expect(() => priceGroupVisit({ ratePerChildPerHour: 300.5, headcount: 1, visitMinutes: 60 })).toThrow();
+    expect(() => priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 1, visitMinutes: 0 })).toThrow();
   });
 });

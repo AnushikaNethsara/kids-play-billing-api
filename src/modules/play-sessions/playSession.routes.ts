@@ -4,6 +4,9 @@ import { authenticate } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../common/utils/asyncHandler';
 import {
+  addSessionExtrasSchema,
+  removeSessionExtraSchema,
+  sessionExtraParamSchema,
   checkInSchema,
   listPlaySessionsQuerySchema,
   playSessionIdParamSchema,
@@ -50,6 +53,16 @@ router.use(authenticate);
  *                   customerId: { type: string }
  *                   parentName: { type: string }
  *                   phoneNumber: { type: string }
+ *               extras:
+ *                 type: array
+ *                 description: Products handed over at check-in (socks), charged at checkout
+ *                 items:
+ *                   type: object
+ *                   required: [localId, productId, quantity]
+ *                   properties:
+ *                     localId: { type: string, description: Device-generated idempotency key }
+ *                     productId: { type: string }
+ *                     quantity: { type: integer, minimum: 1 }
  *     responses:
  *       201: { description: Session opened }
  *       200: { description: Ticket was already checked in (idempotent replay) }
@@ -102,6 +115,67 @@ router.get(
   '/ticket/:ticketCode',
   validate({ params: ticketCodeParamSchema }),
   asyncHandler(playSessionController.getByTicketCode),
+);
+
+/**
+ * @openapi
+ * /play-sessions/ticket/{ticketCode}/extras:
+ *   post:
+ *     tags: [Play Sessions]
+ *     summary: Sell products (socks) onto a child who is playing
+ *     description: >
+ *       Each extra is snapshotted at the product's current price and charged at checkout
+ *       as a PRODUCT line on the session's bill. Idempotent per `localId`. Refused with 409
+ *       once the ticket has been checked out.
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: ticketCode, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [extras]
+ *             properties:
+ *               extras:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required: [localId, productId, quantity]
+ *                   properties:
+ *                     localId: { type: string }
+ *                     productId: { type: string }
+ *                     quantity: { type: integer, minimum: 1 }
+ *     responses:
+ *       200: { description: The session with its extras }
+ *       409: { description: Ticket already checked out }
+ *       422: { description: Product missing or inactive }
+ */
+router.post(
+  '/ticket/:ticketCode/extras',
+  validate({ params: ticketCodeParamSchema, body: addSessionExtrasSchema }),
+  asyncHandler(playSessionController.addExtras),
+);
+
+/**
+ * @openapi
+ * /play-sessions/ticket/{ticketCode}/extras/{localId}:
+ *   delete:
+ *     tags: [Play Sessions]
+ *     summary: Take back an extra added by mistake, before checkout (audited)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: ticketCode, required: true, schema: { type: string } }
+ *       - { in: path, name: localId, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: The session without the extra (also when it was already gone) }
+ *       409: { description: Ticket already checked out }
+ */
+router.delete(
+  '/ticket/:ticketCode/extras/:localId',
+  validate({ params: sessionExtraParamSchema, body: removeSessionExtraSchema }),
+  asyncHandler(playSessionController.removeExtra),
 );
 
 /**

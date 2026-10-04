@@ -1,7 +1,11 @@
 import type { PaperWidth } from '../settings/settings.model';
 import type { PaymentMethod } from '../../common/constants/paymentMethods';
+import type { BillItemKind } from '../../common/constants/billItemKind';
 
 export interface ReceiptItem {
+  /** Selects the layout: a child's play, a group visit, or an over-the-counter sale. */
+  kind: BillItemKind;
+  /** The child; on a PRODUCT line sold onto a visit, the child it was for. Empty otherwise. */
   childName: string;
   packageName: string;
   durationMinutes: number;
@@ -34,6 +38,13 @@ export interface ReceiptItem {
   tierLines?: { label: string; amount: number }[];
   /** TIERED_HOURLY only, and only when non-zero: what rounding added or removed. */
   roundingAdjustment?: number;
+  /**
+   * GROUP lines only, pre-formatted in the business timezone like the session times:
+   * the visit date ("04/10/2026"), start time ("10:00 AM") and length ("2h").
+   */
+  visitDate?: string;
+  visitTime?: string;
+  visitDuration?: string;
 }
 
 export interface ReceiptData {

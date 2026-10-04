@@ -1,5 +1,10 @@
 import { Types } from 'mongoose';
-import { PlaySessionModel, type PlaySessionDocument, type PlaySessionHydrated } from './playSession.model';
+import {
+  PlaySessionModel,
+  type PlaySessionDocument,
+  type PlaySessionExtraSubdocument,
+  type PlaySessionHydrated,
+} from './playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { getSkip } from '../../common/utils/pagination';
 import { escapeRegExp } from '../../common/utils/regex';
@@ -73,6 +78,32 @@ export const playSessionRepository = {
           checkOutCashierName: null,
         },
       },
+      { new: true },
+    ).exec();
+  },
+
+  /**
+   * Adds one extra, compare-and-set twice over: the session must still be ACTIVE (an
+   * extra added after checkout would never be billed), and must not already carry this
+   * `localId` (a retried sync must not sell the same pair twice). Null when either fails;
+   * the caller reads the session back to tell which.
+   */
+  async addExtraIfActive(
+    ticketCode: string,
+    extra: PlaySessionExtraSubdocument,
+  ): Promise<PlaySessionHydrated | null> {
+    return PlaySessionModel.findOneAndUpdate(
+      { ticketCode, status: PlaySessionStatus.ACTIVE, 'extras.localId': { $ne: extra.localId } },
+      { $push: { extras: extra } },
+      { new: true },
+    ).exec();
+  },
+
+  /** Only while ACTIVE: once checked out, the extra is on a bill and stays there. */
+  async removeExtraIfActive(ticketCode: string, localId: string): Promise<PlaySessionHydrated | null> {
+    return PlaySessionModel.findOneAndUpdate(
+      { ticketCode, status: PlaySessionStatus.ACTIVE, 'extras.localId': localId },
+      { $pull: { extras: { localId } } },
       { new: true },
     ).exec();
   },

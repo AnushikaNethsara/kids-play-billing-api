@@ -10,6 +10,29 @@ import {
   tieredPricingSchema,
 } from '../play-packages/tieredPricing.schema';
 
+/**
+ * A product sold onto a child who is playing - socks, typically handed over at the gate.
+ * Charged at checkout as a PRODUCT line on the session's bill rather than as a bill of its
+ * own, because the money is taken once, when the family leaves.
+ *
+ * The name and price are snapshotted when the extra is added, the same rule as the play
+ * rate: a price edit mid-visit never changes what this child's socks cost.
+ */
+export interface PlaySessionExtraSubdocument {
+  /**
+   * Generated on the device that added the extra. The idempotency key for a retried sync:
+   * an add whose `localId` is already on the session is a no-op, not a second pair.
+   */
+  localId: string;
+  productId: Types.ObjectId;
+  productName: string;
+  unitPrice: number;
+  quantity: number;
+  addedAt: Date;
+  addedByCashierId: Types.ObjectId;
+  addedByCashierName: string;
+}
+
 export interface PlaySessionDocument {
   /**
    * The value encoded in the printed QR ticket. Generated on the cashier's device so a
@@ -72,6 +95,9 @@ export interface PlaySessionDocument {
   voidedBy: Types.ObjectId | null;
   voidReason: string | null;
 
+  /** Products sold onto this visit, billed at checkout. Absent on older sessions. */
+  extras: PlaySessionExtraSubdocument[];
+
   /**
    * Mirrors `isTestBill` on the bill this session was checked out into. The session
    * metrics on the dashboard (play hours, occupancy, revenue per play hour) read this
@@ -86,6 +112,20 @@ export interface PlaySessionDocument {
 }
 
 export type PlaySessionHydrated = HydratedDocument<PlaySessionDocument>;
+
+const playSessionExtraSchema = new Schema<PlaySessionExtraSubdocument>(
+  {
+    localId: { type: String, required: true },
+    productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
+    productName: { type: String, required: true },
+    unitPrice: { type: Number, required: true, min: 0 },
+    quantity: { type: Number, required: true, min: 1 },
+    addedAt: { type: Date, required: true },
+    addedByCashierId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    addedByCashierName: { type: String, required: true },
+  },
+  { _id: false },
+);
 
 const playSessionSchema = new Schema<PlaySessionDocument>(
   {
@@ -128,6 +168,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     voidedAt: { type: Date, default: null },
     voidedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     voidReason: { type: String, default: null },
+
+    extras: { type: [playSessionExtraSchema], default: [] },
 
     isTestBill: { type: Boolean, default: false },
   },
@@ -186,6 +228,11 @@ export function resolveSessionRate(
         : 0,
     tieredPricing: pricingMode === SessionPricingMode.TIERED_HOURLY ? tieredPricing : null,
   };
+}
+
+/** What the extras on a session add up to. Tolerates sessions predating extras. */
+export function sumSessionExtras(session: { extras?: PlaySessionExtraSubdocument[] | null }): number {
+  return (session.extras ?? []).reduce((sum, extra) => sum + extra.unitPrice * extra.quantity, 0);
 }
 
 export const PlaySessionModel = model<PlaySessionDocument>('PlaySession', playSessionSchema);

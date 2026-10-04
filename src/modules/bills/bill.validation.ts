@@ -1,15 +1,59 @@
 import { z } from 'zod';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { BillItemKind } from '../../common/constants/billItemKind';
 import { ticketCodeSchema } from '../play-sessions/playSession.validation';
 
 const objectIdSchema = z.string().length(24, 'Invalid id');
 
-export const createBillItemSchema = z.object({
+/** A group of more than this is almost certainly a typo (an amount typed into headcount). */
+export const MAX_GROUP_HEADCOUNT = 500;
+/** A group visit is one day at most. */
+export const MAX_GROUP_VISIT_MINUTES = 24 * 60;
+export const MAX_PRODUCT_QUANTITY = 100;
+
+const playItemSchema = z.object({
+  kind: z.literal(BillItemKind.PLAY),
   childName: z.string().trim().min(1).max(100),
   playPackageId: objectIdSchema,
   quantity: z.number().int().positive().default(1),
 });
+
+const groupItemSchema = z.object({
+  kind: z.literal(BillItemKind.GROUP),
+  groupName: z.string().trim().min(1, 'A group name is required').max(100),
+  headcount: z
+    .number()
+    .int()
+    .min(1, 'Headcount must be at least 1')
+    .max(MAX_GROUP_HEADCOUNT, `Headcount cannot exceed ${MAX_GROUP_HEADCOUNT}`),
+  ratePerChildPerHour: z.number().int().min(1, 'The rate must be more than zero'),
+  visitMinutes: z
+    .number()
+    .int()
+    .min(1, 'The visit must be at least a minute long')
+    .max(MAX_GROUP_VISIT_MINUTES, 'A group visit cannot be longer than a day'),
+  visitAt: z.string().datetime({ offset: true }).optional(),
+});
+
+const productItemSchema = z.object({
+  kind: z.literal(BillItemKind.PRODUCT),
+  productId: objectIdSchema,
+  quantity: z.number().int().min(1).max(MAX_PRODUCT_QUANTITY),
+});
+
+/**
+ * A line on `POST /bills`. Clients written before kinds existed send no `kind`, and every
+ * one of those lines is a child on a package - so a missing kind is filled in as PLAY
+ * before the union is applied, rather than making every old client fail validation.
+ */
+export const createBillItemSchema = z.preprocess(
+  (value) =>
+    value && typeof value === 'object' && !('kind' in value)
+      ? { ...(value as object), kind: BillItemKind.PLAY }
+      : value,
+  z.discriminatedUnion('kind', [playItemSchema, groupItemSchema, productItemSchema]),
+);
 
 export const createBillDiscountSchema = z.object({
   type: z.nativeEnum(DiscountType),
@@ -100,6 +144,7 @@ export const listBillsQuerySchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === 'true')),
+  kind: z.nativeEnum(BillItemKind).optional(),
   isTestBill: z
     .enum(['true', 'false'])
     .optional()

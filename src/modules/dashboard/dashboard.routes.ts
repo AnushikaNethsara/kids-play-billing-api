@@ -65,6 +65,19 @@ router.get('/packages', validate({ query: dashboardQuerySchema }), asyncHandler(
 
 /**
  * @openapi
+ * /dashboard/products:
+ *   get:
+ *     summary: Counter sales (socks) per product - units and revenue (admin-only)
+ *     tags: [Dashboard]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters: [{ in: query, name: period, schema: { type: string } }, { in: query, name: from, schema: { type: string } }, { in: query, name: to, schema: { type: string } }]
+ *     responses:
+ *       200: { description: Array of product performance rows }
+ */
+router.get('/products', validate({ query: dashboardQuerySchema }), asyncHandler(dashboardController.products));
+
+/**
+ * @openapi
  * /dashboard/payment-methods:
  *   get:
  *     summary: Revenue and transaction count by payment method for a period

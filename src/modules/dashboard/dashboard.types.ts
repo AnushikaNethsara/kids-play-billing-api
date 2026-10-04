@@ -35,6 +35,22 @@ export interface DashboardSummary {
   otherPayments: MoneyBreakdown;
   bestSellingPackage: { playPackageId: string; packageName: string; quantitySold: number; revenue: number } | null;
   topCashier: { cashierId: string; cashierName: string; revenue: number; billCount: number } | null;
+  /**
+   * Line totals by kind of line, before bill-level discount and tax - what play, group
+   * visits and counter sales each brought in. Sums to `grossRevenue`.
+   */
+  revenueByKind: { play: number; group: number; product: number };
+  /** Group lines in the period, and the children they brought between them. */
+  groupVisits: { count: number; headcount: number };
+  /** Units sold across every product. */
+  productUnitsSold: number;
+}
+
+export interface ProductPerformance {
+  productId: string;
+  productName: string;
+  quantitySold: number;
+  revenue: number;
 }
 
 /**

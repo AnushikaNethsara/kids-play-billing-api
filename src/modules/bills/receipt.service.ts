@@ -28,6 +28,9 @@ export const receiptService = {
         billNumber: bill.billNumber,
         date: paidMoment ? paidMoment.toFormat('yyyy-MM-dd') : '',
         time: paidMoment ? paidMoment.toFormat('HH:mm') : '',
+        paymentRecordedDate: bill.paymentRecordedAt
+          ? DateTime.fromJSDate(bill.paymentRecordedAt).setZone(settings.timezone).toFormat('yyyy-MM-dd')
+          : null,
         cashierName: bill.cashierName,
         parentName: bill.parentName,
         items: bill.items.map((item) => {
@@ -122,6 +125,10 @@ export const receiptService = {
     // nothing here to catch it.
     lines.push(...wrapText(`Bill: ${data.bill.billNumber ?? ''}`, width));
     if (paidMoment) lines.push(`Date: ${paidMoment.toFormat('dd/MM/yyyy')}  ${paidMoment.toFormat('hh:mm a')}`);
+    if (data.bill.paymentRecordedDate) {
+      const recorded = DateTime.fromFormat(data.bill.paymentRecordedDate, 'yyyy-MM-dd');
+      lines.push(...wrapText(`Payment recorded ${recorded.toFormat('dd/MM/yyyy')}`, width));
+    }
     lines.push(...wrapText(`Cashier: ${data.bill.cashierName}`, width));
     if (data.bill.parentName) lines.push(...wrapText(`Parent: ${data.bill.parentName}`, width));
     lines.push(dashLine(width));

@@ -108,7 +108,11 @@ export const customerService = {
 
     customer.visitCount += 1;
     customer.totalSpent += amountSpent;
-    customer.lastVisitAt = visitDate;
+    // Never moved backwards: a payment recorded after the fact is dated to its checkout,
+    // which can be older than a visit this parent has made since.
+    if (!customer.lastVisitAt || visitDate.getTime() > customer.lastVisitAt.getTime()) {
+      customer.lastVisitAt = visitDate;
+    }
     if (customerRef.parentName && !customer.parentName) customer.parentName = customerRef.parentName;
     await customer.save();
 

@@ -38,6 +38,11 @@ export interface ReceiptData {
     billNumber: string | null;
     date: string;
     time: string;
+    /**
+     * yyyy-MM-dd when the payment was recorded later and dated to the checkout; null on a
+     * normal payment. Printed so a reprint does not pass off a late entry as a till sale.
+     */
+    paymentRecordedDate: string | null;
     cashierName: string;
     parentName: string;
     items: ReceiptItem[];

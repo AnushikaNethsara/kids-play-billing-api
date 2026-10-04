@@ -24,6 +24,7 @@ import {
 import { InvalidPlayPackageError } from './bill.errors';
 import {
   calculateBillTotals,
+  checkoutTimeOf,
   isDiscountAboveThreshold,
   priceSession,
   priceSessionForPeriod,
@@ -44,6 +45,13 @@ import type {
 } from './bill.types';
 import type { AuthenticatedUser } from '../../common/types/express';
 import { buildPaginationMeta } from '../../common/utils/pagination';
+
+const MONGO_DUPLICATE_KEY_ERROR_CODE = 11000;
+
+function isDuplicateBillNumberError(error: unknown): boolean {
+  const mongoError = error as { code?: number; keyPattern?: Record<string, unknown> };
+  return mongoError?.code === MONGO_DUPLICATE_KEY_ERROR_CODE && !!mongoError.keyPattern?.billNumber;
+}
 
 function toPublicItem(item: BillItemSubdocument): BillItemPublic {
   const pricingMode =
@@ -117,6 +125,9 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     refundedAt: bill.refundedAt,
     refundedBy: bill.refundedBy ? bill.refundedBy.toString() : null,
     refundReason: bill.refundReason,
+    paymentRecordedAt: bill.paymentRecordedAt ?? null,
+    paymentRecordedBy: bill.paymentRecordedBy ? bill.paymentRecordedBy.toString() : null,
+    paymentRecordedByName: bill.paymentRecordedByName ?? null,
     // Bills predating the flag have no such field, so this normalises to false rather
     // than leaking undefined out through the API.
     isTestBill: bill.isTestBill ?? false,
@@ -558,11 +569,21 @@ export const billService = {
     }
     const balance = paidAmount - totals.grandTotal;
 
-    const billNumber = await billNumberService.generate(settings.timezone);
-    const paidAt = new Date();
+    // Recovering a checkout abandoned at the till: the payment is dated to the checkout,
+    // so the bill number and the day the revenue counts on are the day it really happened.
+    // Admin-only, and the time is derived from the bill - never supplied - so this cannot
+    // be used to move a payment to an arbitrary day. Clamped to now because a session's
+    // checkOutAt is the till's clock, which may run slightly ahead of the server's.
+    const recordedAt = new Date();
+    const backdated = input.backdateToCheckout === true;
+    if (backdated && actor.role !== UserRole.ADMIN) {
+      throw new AuthorizationError('Only an admin can date a payment to the checkout time');
+    }
+    const paidAt = backdated
+      ? new Date(Math.min(checkoutTimeOf(bill).getTime(), recordedAt.getTime()))
+      : recordedAt;
 
-    const updated = await billRepository.completeIfDraft(id, {
-      billNumber,
+    const update = {
       status: BillStatus.PAID,
       subtotal: totals.subtotal,
       discount: totals.discount,
@@ -572,7 +593,30 @@ export const billService = {
       balance,
       paymentMethod: input.paymentMethod,
       paidAt,
-    });
+      ...(backdated
+        ? {
+            paymentRecordedAt: recordedAt,
+            paymentRecordedBy: new Types.ObjectId(actor.id),
+            paymentRecordedByName: actor.name,
+          }
+        : {}),
+    };
+
+    let updated: BillHydrated | null;
+    try {
+      updated = await billRepository.completeIfDraft(id, {
+        ...update,
+        billNumber: await billNumberService.generate(settings.timezone, paidAt),
+      });
+    } catch (error) {
+      // Two backdated payments racing onto the same second can both pass the generator's
+      // free-number check; the unique index rejects the loser. One fresh number settles it.
+      if (!isDuplicateBillNumberError(error)) throw error;
+      updated = await billRepository.completeIfDraft(id, {
+        ...update,
+        billNumber: await billNumberService.generate(settings.timezone, paidAt),
+      });
+    }
 
     if (!updated) {
       throw new InvalidStateError('Bill is no longer in draft status - it may have already been completed');
@@ -598,8 +642,9 @@ export const billService = {
     // A draft paid by someone other than the cashier who created it is the recovery path
     // for a checkout abandoned at the till (an admin recording a payment that was taken
     // but never confirmed). The bill keeps its original cashier; this records who
-    // actually took the money into the system, and when the draft was really made.
-    if (bill.cashierId.toString() !== actor.id) {
+    // actually took the money into the system, and when the draft was really made. A
+    // backdated payment is always audited, even when the admin was the bill's cashier.
+    if (bill.cashierId.toString() !== actor.id || backdated) {
       await auditLogService.record({
         userId: actor.id,
         userName: actor.name,
@@ -613,6 +658,9 @@ export const billService = {
           paymentMethod: input.paymentMethod,
           paidAmount,
           grandTotal: totals.grandTotal,
+          paidAt,
+          backdatedToCheckout: backdated,
+          paymentRecordedAt: recordedAt,
         },
       });
     }

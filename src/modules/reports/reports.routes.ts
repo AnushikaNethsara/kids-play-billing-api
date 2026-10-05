@@ -9,6 +9,7 @@ import {
   dailyCloseQuerySchema,
   exceptionsQuerySchema,
   periodSummaryQuerySchema,
+  customerReportQuerySchema,
   sessionReportQuerySchema,
 } from './reports.validation';
 
@@ -127,6 +128,33 @@ router.get(
   '/period-summary',
   validate({ query: periodSummaryQuerySchema }),
   asyncHandler(reportsController.periodSummary),
+);
+
+/**
+ * @openapi
+ * /reports/customers:
+ *   get:
+ *     summary: Returning families - new vs returning, cohorts, visit frequency, arrival times
+ *     description: >
+ *       A family is a phone number; a visit is a business day with a paid play bill. A
+ *       family is new on its first-ever visit day and returning after that. Cohorts are
+ *       the 12 first-visit months ending with the range's end month. Aggregate only - no
+ *       phone numbers. `format=csv` exports the new-vs-returning rows.
+ *     tags: [Reports]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: query, name: period, schema: { type: string, enum: [today, yesterday, this_week, last_week, this_month, last_month, this_year] } }
+ *       - { in: query, name: from, schema: { type: string } }
+ *       - { in: query, name: to, schema: { type: string } }
+ *       - { in: query, name: groupBy, schema: { type: string, enum: [day, week, month] } }
+ *       - { in: query, name: format, schema: { type: string, enum: [json, csv] } }
+ *     responses:
+ *       200: { description: The customers report }
+ */
+router.get(
+  '/customers',
+  validate({ query: customerReportQuerySchema }),
+  asyncHandler(reportsController.customers),
 );
 
 export const reportRoutes = router;

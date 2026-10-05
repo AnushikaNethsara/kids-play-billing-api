@@ -21,6 +21,7 @@ export const ReportName = {
   EXCEPTIONS: 'exceptions',
   SESSIONS: 'sessions',
   PERIOD_SUMMARY: 'period-summary',
+  CUSTOMERS: 'customers',
 } as const;
 
 export type ReportName = (typeof ReportName)[keyof typeof ReportName];
@@ -292,4 +293,69 @@ export interface PeriodSummaryReport {
   packages: PackagePerformance[];
   products: ProductPerformance[];
   sessions: SessionSummary;
+}
+
+// ---- Customers --------------------------------------------------------------------
+
+export interface CustomerReportQuery extends ReportRangeQuery {
+  groupBy?: SummaryGroupBy;
+  format: ReportFormat;
+}
+
+/**
+ * Families are phone numbers (or a customer record with none). A visit is one business
+ * day with a paid play bill - see `customers/customerVisits.ts`. A family is **new** on
+ * the day of its first-ever visit and **returning** on every visit after it.
+ */
+export interface CustomerReportSummary {
+  /** Families with at least one visit in the range. */
+  uniqueFamilies: number;
+  /** Family visits in the range, plus anonymous ones. */
+  visits: number;
+  /** Families whose first-ever visit falls in the range. */
+  newFamilies: number;
+  /** Families in the range who had visited before it. */
+  returningFamilies: number;
+  /** returningFamilies / uniqueFamilies, 0-1. 0 when there were no families. */
+  returningShare: number;
+  /** Play bills with no phone number and no customer - visits nobody can be followed up. */
+  anonymousVisits: number;
+}
+
+export interface CustomerReportBucket {
+  /** `2026-10-06`, `2026-W41` or `2026-10`, as the period summary labels its rows. */
+  label: string;
+  start: string;
+  end: string;
+  visits: number;
+  families: number;
+  newFamilies: number;
+  returningFamilies: number;
+}
+
+export interface CustomerCohort {
+  /** The month of these families' first visit, `YYYY-MM`. */
+  month: string;
+  size: number;
+  /**
+   * `retention[k]` is the share (0-1) of the cohort that visited in month `+k`. Index 0
+   * is always 1. Only months up to the report's end month are present.
+   */
+  retention: number[];
+}
+
+export interface CustomerReport {
+  header: ReportHeader;
+  groupBy: SummaryGroupBy;
+  summary: CustomerReportSummary;
+  newVsReturning: CustomerReportBucket[];
+  /** The 12 first-visit months ending with the report's end month, oldest first. */
+  cohorts: CustomerCohort[];
+  /** Families in the range by how many times they came in it. */
+  frequencyHistogram: { label: '1' | '2-3' | '4-9' | '10+'; families: number }[];
+  /**
+   * When visits begin, by weekday (0 = Monday) and hour in the business timezone. A visit
+   * is counted once, at its first check-in.
+   */
+  dayHourHeatmap: { weekday: number; hour: number; newVisits: number; returningVisits: number }[];
 }

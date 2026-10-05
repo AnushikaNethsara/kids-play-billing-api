@@ -26,5 +26,6 @@ export const updateSettingsSchema = z
     logoRasterWidthDots: z.number().int().min(0).max(1024).optional(),
     logoRasterHeightDots: z.number().int().min(0).max(2000).optional(),
     showLogoOnReceipt: z.boolean().optional(),
+    loyaltyVisitInterval: z.number().int().min(0).max(100).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field is required' });

@@ -1,6 +1,8 @@
+import { Types } from 'mongoose';
 import { BillModel, type BillHydrated, type BillDocument } from './bill.model';
 import { getSkip } from '../../common/utils/pagination';
 import { escapeRegExp } from '../../common/utils/regex';
+import { phoneSearchDigits } from '../../common/utils/phone';
 import type { ListBillsQuery } from './bill.types';
 import { BillStatus } from '../../common/constants/billStatus';
 import { BillItemKind } from '../../common/constants/billItemKind';
@@ -33,6 +35,14 @@ export const billRepository = {
    */
   async completeIfDraft(id: string, update: Partial<BillDocument>): Promise<BillHydrated | null> {
     return BillModel.findOneAndUpdate({ _id: id, status: BillStatus.DRAFT }, { $set: update }, { new: true }).exec();
+  },
+
+  /** Links a paid bill to the customer it was recorded against, if it is not already. */
+  async setCustomerIdIfUnset(id: Types.ObjectId | string, customerId: string): Promise<void> {
+    await BillModel.updateOne(
+      { _id: id, customerId: null },
+      { $set: { customerId: new Types.ObjectId(customerId) } },
+    ).exec();
   },
 
   /** Same compare-and-set pattern as completeIfDraft, applied to cancel/refund transitions. */
@@ -74,7 +84,8 @@ export const billRepository = {
       mongoFilter.parentName = { $regex: escapeRegExp(filter.parentName), $options: 'i' };
     }
     if (filter.phoneNumber) {
-      mongoFilter.phoneNumber = { $regex: escapeRegExp(filter.phoneNumber), $options: 'i' };
+      // Stored normalised; matched on the digits typed, wherever they fall in the number.
+      mongoFilter.phoneNumber = { $regex: escapeRegExp(phoneSearchDigits(filter.phoneNumber)) };
     }
     if (filter.cashierId) mongoFilter.cashierId = filter.cashierId;
     if (filter.status) mongoFilter.status = filter.status;

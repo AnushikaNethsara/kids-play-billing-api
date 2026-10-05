@@ -1,6 +1,7 @@
 import { CustomerModel, type CustomerHydrated } from './customer.model';
 import { getSkip } from '../../common/utils/pagination';
 import { escapeRegExp } from '../../common/utils/regex';
+import { phoneSearchDigits } from '../../common/utils/phone';
 
 export const customerRepository = {
   async findById(id: string): Promise<CustomerHydrated | null> {
@@ -9,6 +10,23 @@ export const customerRepository = {
 
   async findByPhoneNumber(phoneNumber: string): Promise<CustomerHydrated | null> {
     return CustomerModel.findOne({ phoneNumber }).exec();
+  },
+
+  /** Finds the customer with this (normalised) number, creating an empty one if none. */
+  async upsertByPhoneNumber(phoneNumber: string): Promise<CustomerHydrated | null> {
+    return CustomerModel.findOneAndUpdate(
+      { phoneNumber },
+      { $setOnInsert: { phoneNumber, parentName: '', email: '', notes: '' } },
+      { upsert: true, new: true },
+    ).exec();
+  },
+
+  /** Writes the derived visit figures. Only `customerService.recomputeStats` calls this. */
+  async setStats(
+    id: string,
+    stats: { visitCount: number; totalSpent: number; lastVisitAt: Date | null },
+  ): Promise<void> {
+    await CustomerModel.updateOne({ _id: id }, { $set: stats }).exec();
   },
 
   async create(data: {
@@ -27,10 +45,12 @@ export const customerRepository = {
     const mongoFilter: Record<string, unknown> = {};
     if (filter.search) {
       const escaped = escapeRegExp(filter.search);
+      const phoneDigits = phoneSearchDigits(filter.search);
       mongoFilter.$or = [
         { parentName: { $regex: escaped, $options: 'i' } },
-        { phoneNumber: { $regex: escaped, $options: 'i' } },
         { email: { $regex: escaped, $options: 'i' } },
+        // Phones are stored normalised, so "077 123" has to be matched as "77123".
+        ...(phoneDigits ? [{ phoneNumber: { $regex: escapeRegExp(phoneDigits) } }] : []),
       ];
     }
 
@@ -46,8 +66,12 @@ export const customerRepository = {
     return { customers, total };
   },
 
+  /** Search-as-you-type at the till: whatever has been typed so far, in any format. */
   async searchByPhoneNumber(phoneNumber: string): Promise<CustomerHydrated[]> {
-    return CustomerModel.find({ phoneNumber: { $regex: `^${escapeRegExp(phoneNumber)}` } })
+    const digits = phoneSearchDigits(phoneNumber);
+    if (!digits) return [];
+    return CustomerModel.find({ phoneNumber: { $regex: escapeRegExp(digits) } })
+      .sort({ lastVisitAt: -1 })
       .limit(10)
       .exec();
   },

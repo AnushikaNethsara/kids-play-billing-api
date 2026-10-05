@@ -192,11 +192,11 @@ describe('dating a recovered payment to the checkout', () => {
       .set('Authorization', `Bearer ${cashierToken}`)
       .send({ items: [{ childName: 'Linara', playPackageId: pkg.id, quantity: 1 }], customer });
     await recordPayment(cashierToken, recent.body.data.id);
-    const before = await CustomerModel.findOne({ phoneNumber: customer.phoneNumber }).lean();
+    const before = await CustomerModel.findOne({ phoneNumber: '+94716962828' }).lean();
 
     await recordPayment(adminToken, draft.id, { backdateToCheckout: true });
 
-    const after = await CustomerModel.findOne({ phoneNumber: customer.phoneNumber }).lean();
+    const after = await CustomerModel.findOne({ phoneNumber: '+94716962828' }).lean();
     expect(after?.lastVisitAt).toEqual(before?.lastVisitAt);
     expect(after?.visitCount).toBe((before?.visitCount ?? 0) + 1);
   });

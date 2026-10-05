@@ -22,7 +22,9 @@ import { buildPaginationMeta, getSkip, type PaginationMeta } from '../../common/
 import { ValidationError } from '../../common/errors';
 import type { AuthenticatedUser } from '../../common/types/express';
 import { maskPhone } from './reports.csv';
+import { toLocalPhone } from '../../common/utils/phone';
 import { getPeriodSummary } from './periodSummary';
+import { getCustomerReport } from './customerReport';
 import {
   ExceptionType,
   type BillLineRow,
@@ -37,6 +39,8 @@ import {
   type ExceptionsReport,
   type PeriodSummaryQuery,
   type PeriodSummaryReport,
+  type CustomerReport,
+  type CustomerReportQuery,
   type ReportRangeQuery,
   type SessionReportQuery,
   type SessionReportRow,
@@ -124,7 +128,7 @@ function toBillRegisterRow(bill: LeanBill, includeContact: boolean): BillRegiste
     cashierName: bill.cashierName,
     paymentRecordedByName: bill.paymentRecordedByName ?? null,
     parentName: includeContact ? bill.parentName ?? '' : '',
-    phoneNumber: includeContact ? bill.phoneNumber ?? '' : maskPhone(bill.phoneNumber),
+    phoneNumber: includeContact ? toLocalPhone(bill.phoneNumber) : maskPhone(bill.phoneNumber),
     childrenCount: bill.items.reduce((sum, item) => sum + childrenOnLine(item), 0),
     playAmount: amountOf(BillItemKind.PLAY),
     groupAmount: amountOf(BillItemKind.GROUP),
@@ -264,7 +268,7 @@ function toSessionReportRow(
     checkOutCashierName: session.checkOutCashierName ?? null,
     voidReason: session.voidReason ?? '',
     parentName: includeContact ? session.parentName ?? '' : '',
-    phoneNumber: includeContact ? session.phoneNumber ?? '' : maskPhone(session.phoneNumber),
+    phoneNumber: includeContact ? toLocalPhone(session.phoneNumber) : maskPhone(session.phoneNumber),
   };
 }
 
@@ -294,6 +298,14 @@ export const reportsService = {
   ): Promise<{ range: ResolvedReportRange; report: PeriodSummaryReport }> {
     const range = await resolveReportRange(query);
     return { range, report: await getPeriodSummary(query, range, actor) };
+  },
+
+  async getCustomerReport(
+    query: CustomerReportQuery,
+    actor: AuthenticatedUser,
+  ): Promise<{ range: ResolvedReportRange; report: CustomerReport }> {
+    const range = await resolveReportRange(query);
+    return { range, report: await getCustomerReport(query, range, actor) };
   },
 
   async getDailyClose(query: DailyCloseQuery, actor: AuthenticatedUser): Promise<DailyCloseReport> {

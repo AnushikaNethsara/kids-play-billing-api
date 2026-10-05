@@ -4,6 +4,7 @@ import type { CsvColumn } from './reports.csv';
 import type {
   BillLineRow,
   BillRegisterRow,
+  CustomerReportBucket,
   ExceptionRow,
   PeriodBucket,
   SessionReportRow,
@@ -112,6 +113,18 @@ export function sessionColumns(timezone: string, includeContact: boolean): CsvCo
   ];
   if (includeContact) columns.push({ header: 'Parent name', value: (row) => row.parentName });
   return columns;
+}
+
+export function customerReportColumns(): CsvColumn<CustomerReportBucket>[] {
+  return [
+    { header: 'Period', value: (row) => row.label },
+    { header: 'From', kind: 'raw', value: (row) => row.start },
+    { header: 'To', kind: 'raw', value: (row) => row.end },
+    { header: 'Visits', kind: 'raw', value: (row) => row.visits },
+    { header: 'Families', kind: 'raw', value: (row) => row.families },
+    { header: 'New families', kind: 'raw', value: (row) => row.newFamilies },
+    { header: 'Returning families', kind: 'raw', value: (row) => row.returningFamilies },
+  ];
 }
 
 export function periodSummaryColumns(): CsvColumn<PeriodBucket>[] {

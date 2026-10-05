@@ -21,6 +21,8 @@ export interface UpdateSettingsInput {
   logoRasterWidthDots?: number;
   logoRasterHeightDots?: number;
   showLogoOnReceipt?: boolean;
+  /** Every Nth visit is flagged as reward due. 0 = off. */
+  loyaltyVisitInterval?: number;
 }
 
 export interface BusinessSettingsPublic extends UpdateSettingsInput {
@@ -44,5 +46,6 @@ export interface BusinessSettingsPublic extends UpdateSettingsInput {
   logoRasterWidthDots: number;
   logoRasterHeightDots: number;
   showLogoOnReceipt: boolean;
+  loyaltyVisitInterval: number;
   updatedAt: Date;
 }

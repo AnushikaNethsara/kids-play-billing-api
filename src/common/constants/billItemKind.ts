@@ -8,11 +8,15 @@
  *   rate per child per hour, `quantity` is the headcount and `visitMinutes` the length of
  *   the visit, so the line is `round(unitPrice x quantity x visitMinutes / 60)`.
  * - PRODUCT: something sold over the counter, such as socks. `unitPrice x quantity`.
+ * - SUBSCRIPTION: a monthly subscription sold to a family - a bundle of visit credits.
+ *   `unitPrice` is the plan price, `quantity` is always 1. Paying the bill activates the
+ *   subscription; see docs/subscriptions.md.
  */
 export const BillItemKind = {
   PLAY: 'PLAY',
   GROUP: 'GROUP',
   PRODUCT: 'PRODUCT',
+  SUBSCRIPTION: 'SUBSCRIPTION',
 } as const;
 
 export type BillItemKind = (typeof BillItemKind)[keyof typeof BillItemKind];
@@ -25,6 +29,7 @@ export function resolveItemKind(item: { kind?: string | null }): BillItemKind {
   switch (item.kind) {
     case BillItemKind.GROUP:
     case BillItemKind.PRODUCT:
+    case BillItemKind.SUBSCRIPTION:
       return item.kind;
     default:
       return BillItemKind.PLAY;

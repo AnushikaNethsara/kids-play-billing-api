@@ -64,6 +64,14 @@ export const playSessionRepository = {
    * still in the play area, so the ticket must go back to being billable.
    */
   async reopen(sessionId: Types.ObjectId | string): Promise<PlaySessionHydrated | null> {
+    // A subscription ticket's checkout figures go with the checkout. Separate from the
+    // update below because `subscription.*` cannot be set on a ticket whose subscription
+    // is null. Its checkout credits are given back by the caller, before this runs.
+    await PlaySessionModel.updateOne(
+      { _id: sessionId, status: PlaySessionStatus.CLOSED, subscription: { $ne: null } },
+      { $set: { 'subscription.creditsUsed': null, 'subscription.shortfallBlocks': null } },
+    ).exec();
+
     return PlaySessionModel.findOneAndUpdate(
       { _id: sessionId, status: PlaySessionStatus.CLOSED },
       {
@@ -106,6 +114,29 @@ export const playSessionRepository = {
     return PlaySessionModel.findOneAndUpdate(
       { ticketCode, status: PlaySessionStatus.ACTIVE, 'extras.localId': localId },
       { $pull: { extras: { localId } } },
+      { new: true },
+    ).exec();
+  },
+
+  /**
+   * Freezes what a claimed subscription ticket used, straight after the claim. The claim
+   * itself cannot carry these: the credits can only be taken once the ticket is safely
+   * ours, or two cashiers scanning the same slip would both take them.
+   */
+  async setSubscriptionCheckout(
+    sessionId: Types.ObjectId,
+    update: { checkoutCredits: number; creditsUsed: number; shortfallBlocks: number; chargedAmount: number },
+  ): Promise<PlaySessionHydrated | null> {
+    return PlaySessionModel.findOneAndUpdate(
+      { _id: sessionId, status: PlaySessionStatus.CLOSED },
+      {
+        $set: {
+          'subscription.checkoutCredits': update.checkoutCredits,
+          'subscription.creditsUsed': update.creditsUsed,
+          'subscription.shortfallBlocks': update.shortfallBlocks,
+          chargedAmount: update.chargedAmount,
+        },
+      },
       { new: true },
     ).exec();
   },

@@ -11,7 +11,10 @@ import {
 import { InvalidPlayPackageError } from '../bills/bill.errors';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
-import { priceSessionForPeriod } from '../bills/billCalculator';
+import { priceSessionForPeriod, type SessionPriceBreakdown } from '../bills/billCalculator';
+import { SessionPricingMode } from '../../common/constants/pricingModes';
+import { subscriptionService } from '../subscriptions/subscription.service';
+import { creditsPerChildForStay, nextCreditAtMinute } from '../subscriptions/subscriptionRules';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { UserRole } from '../../common/constants/roles';
 import { AuthorizationError, InvalidStateError, NotFoundError, ValidationError } from '../../common/errors';
@@ -23,6 +26,7 @@ import {
   sumSessionExtras,
   type PlaySessionExtraSubdocument,
   type PlaySessionHydrated,
+  type PlaySessionSubscriptionSubdocument,
 } from './playSession.model';
 import { productRepository } from '../products/product.repository';
 import { InvalidProductError } from '../bills/bill.errors';
@@ -35,6 +39,7 @@ import type {
   PlaySessionPublic,
   PlaySessionWithQuote,
   SessionQuote,
+  SessionSubscriptionQuote,
   VoidSessionInput,
 } from './playSession.types';
 import type { AuthenticatedUser } from '../../common/types/express';
@@ -55,7 +60,7 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     childName: session.childName,
     childNames: resolveChildNames(session),
     childCount: resolveChildCount(session),
-    playPackageId: session.playPackageId.toString(),
+    playPackageId: session.playPackageId ? session.playPackageId.toString() : null,
     packageName: session.packageName,
     rateDurationMinutes: session.rateDurationMinutes,
     unitPrice: session.unitPrice,
@@ -88,6 +93,20 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     })),
     extrasTotal: sumSessionExtras(session),
     isTestBill: session.isTestBill ?? false,
+    subscription: session.subscription
+      ? {
+          subscriptionId: session.subscription.subscriptionId.toString(),
+          code: session.subscription.code,
+          planName: session.subscription.planName,
+          visitMinutes: session.subscription.visitMinutes,
+          graceMinutes: session.subscription.graceMinutes,
+          extraBlockPrice: session.subscription.extraBlockPrice,
+          creditsReserved: session.subscription.creditsReserved,
+          creditsUsed: session.subscription.creditsUsed ?? null,
+          shortfallBlocks: session.subscription.shortfallBlocks ?? null,
+          rejectedReason: session.subscription.rejectedReason ?? null,
+        }
+      : null,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };
@@ -105,9 +124,11 @@ export function quoteSession(
     PlaySessionHydrated,
     'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes' | 'tieredPricing'
   > &
-    Partial<Pick<PlaySessionHydrated, 'childCount'>>,
+    Partial<Pick<PlaySessionHydrated, 'childCount' | 'subscription'>>,
   asOf: Date,
   settings: { minimumBillableMinutes: number; maximumSessionHours: number },
+  /** A subscription ticket's current balance, when the caller has read it. */
+  subscriptionRemaining: number | null = null,
 ): SessionQuote {
   const { elapsedMinutes, billedMinutes, minimumApplied, breakdown } = priceSessionForPeriod({
     checkInAt: session.checkInAt,
@@ -115,6 +136,16 @@ export function quoteSession(
     rate: resolveSessionRate(session),
     minimumBillableMinutes: settings.minimumBillableMinutes,
   });
+
+  if (session.subscription) {
+    return quoteSubscriptionTicket(
+      session.subscription,
+      resolveChildCount(session),
+      { asOf, elapsedMinutes, billedMinutes, breakdown },
+      settings,
+      subscriptionRemaining,
+    );
+  }
 
   // An absolute instant rather than a duration, so a board polling every 30 seconds can
   // tick the countdown down locally instead of showing a number that is half a minute old.
@@ -136,6 +167,89 @@ export function quoteSession(
     exceedsMaximumSession: elapsedMinutes > settings.maximumSessionHours * MINUTES_PER_HOUR,
     breakdown,
     nextChargeAt,
+    subscription: null,
+  };
+}
+
+/**
+ * The live quote of a subscription ticket. Its money is only the cash shortfall - child-
+ * blocks no credit will cover - so the useful figures are in credits. The breakdown is
+ * re-expressed in the same terms (one block per credit, no pro-rata overage), so a client
+ * that only knows how to show blocks still shows something true.
+ */
+function quoteSubscriptionTicket(
+  sub: PlaySessionSubscriptionSubdocument,
+  childCount: number,
+  period: { asOf: Date; elapsedMinutes: number; billedMinutes: number; breakdown: SessionPriceBreakdown },
+  settings: { maximumSessionHours: number },
+  subscriptionRemaining: number | null,
+): SessionQuote {
+  const { asOf, elapsedMinutes, billedMinutes, breakdown } = period;
+  const creditsPerChild = creditsPerChildForStay({
+    elapsedMinutes,
+    visitMinutes: sub.visitMinutes,
+    graceMinutes: sub.graceMinutes,
+  });
+  const creditsNeeded = creditsPerChild * childCount;
+
+  let shortfallBlocks = creditsNeeded;
+  if (!sub.rejectedReason) {
+    const extra = Math.max(creditsNeeded - sub.creditsReserved, 0);
+    const available = subscriptionRemaining ?? extra;
+    shortfallBlocks = Math.max(extra - available, 0);
+  }
+
+  const lineTotal = shortfallBlocks * sub.extraBlockPrice;
+  // Shortfall blocks need not divide evenly between the children, so this is advisory;
+  // `lineTotal` is the ticket's figure.
+  const perChildLineTotal = Math.floor(lineTotal / childCount);
+  const nextMinute = nextCreditAtMinute({
+    creditsPerChild,
+    visitMinutes: sub.visitMinutes,
+    graceMinutes: sub.graceMinutes,
+  });
+  const minutesUntilNextCredit = Math.max(nextMinute - elapsedMinutes, 0);
+  const nextCreditAt = new Date(asOf.getTime() + minutesUntilNextCredit * MILLISECONDS_PER_MINUTE);
+  const completed = Math.floor(elapsedMinutes / sub.visitMinutes);
+  const remainder = elapsedMinutes - completed * sub.visitMinutes;
+  const graceApplied = completed >= 1 && remainder > 0 && remainder <= sub.graceMinutes;
+
+  const subscription: SessionSubscriptionQuote = {
+    creditsPerChild,
+    creditsNeeded,
+    creditsReserved: sub.creditsReserved,
+    creditsAvailable: subscriptionRemaining,
+    shortfallBlocks,
+    nextCreditAt,
+  };
+
+  return {
+    asOf,
+    elapsedMinutes,
+    billedMinutes,
+    minimumApplied: false,
+    lineTotal,
+    perChildLineTotal,
+    childCount,
+    exceedsMaximumSession: elapsedMinutes > settings.maximumSessionHours * MINUTES_PER_HOUR,
+    breakdown: {
+      ...breakdown,
+      lineTotal: perChildLineTotal,
+      blocksCharged: creditsPerChild,
+      blockSubtotal: perChildLineTotal,
+      overageMinutes: 0,
+      overageAmount: 0,
+      graceApplied,
+      // Credits are whole: there is no running extra time between one and the next.
+      inExtraTime: false,
+      minutesUntilNextCharge: minutesUntilNextCredit,
+      hourLines: [],
+      overtime: null,
+      rawTotal: perChildLineTotal,
+      roundingAdjustment: 0,
+    },
+    nextChargeAt: nextCreditAt,
+    subscription,
   };
 }
 
@@ -177,6 +291,19 @@ async function snapshotExtras(
   return extras;
 }
 
+/** Balances of the subscriptions behind these tickets, in one read. */
+async function subscriptionBalances(sessions: PlaySessionHydrated[]): Promise<Map<string, number>> {
+  const ids = sessions
+    .map((session) => session.subscription?.subscriptionId)
+    .filter((id): id is Types.ObjectId => Boolean(id));
+  return ids.length > 0 ? subscriptionService.remainingByIds(ids) : new Map();
+}
+
+function balanceFor(session: PlaySessionHydrated, balances: Map<string, number>): number | null {
+  const id = session.subscription?.subscriptionId?.toString();
+  return id ? (balances.get(id) ?? null) : null;
+}
+
 export const playSessionService = {
   /**
    * Checking a child - or a family of children on one ticket - in. Retry-safe by construction: the unique index on `ticketCode`
@@ -200,17 +327,100 @@ export const playSessionService = {
     }
 
     const settings = await settingsService.getRaw();
-    const pkg = await playPackageRepository.findById(input.playPackageId);
+    const now = new Date();
+    const checkInAt = this.resolveCheckInAt(input.checkInAt, now, resolveMaximumSessionHours(settings));
+
+    // Validation guarantees exactly one of the two is present.
+    const childNames = input.childNames ?? [input.childName as string];
+
+    // Everything that can reject the request is checked before any credit is reserved, so
+    // a refused check-in never costs the family a visit.
+    const packageRate = input.subscriptionId
+      ? null
+      : await this.packageRateFor(input.playPackageId as string);
+    const extras = await snapshotExtras(input.extras ?? [], actor, checkInAt);
+
+    let subscription: PlaySessionSubscriptionSubdocument | null = null;
+    let customer = {
+      customerId: input.customer?.customerId ? new Types.ObjectId(input.customer.customerId) : null,
+      parentName: input.customer?.parentName ?? '',
+      phoneNumber: input.customer?.phoneNumber ?? '',
+    };
+    if (input.subscriptionId) {
+      const reservation = await subscriptionService.reserveForCheckIn({
+        subscriptionId: input.subscriptionId,
+        childNames,
+        checkInAt,
+      });
+      subscription = reservation.snapshot;
+      // The family is whoever bought the subscription, unless the cashier said otherwise.
+      customer = {
+        customerId: customer.customerId ?? reservation.subscription.customerId,
+        parentName: customer.parentName || reservation.subscription.parentName,
+        phoneNumber: customer.phoneNumber || reservation.subscription.phoneNumber,
+      };
+    }
+
+    // A subscription ticket has no package. Its rate fields describe the plan's cash
+    // fallback - block pricing at the extra block price - so every display that predates
+    // subscriptions still reads something true; pricing itself goes by `subscription`.
+    const rate = subscription
+      ? {
+          playPackageId: null,
+          packageName: subscription.planName,
+          rateDurationMinutes: subscription.visitMinutes,
+          unitPrice: subscription.extraBlockPrice,
+          pricingMode: SessionPricingMode.BLOCK_WITH_GRACE,
+          graceMinutes: subscription.graceMinutes,
+          tieredPricing: null,
+        }
+      : (packageRate as NonNullable<typeof packageRate>);
+
+    try {
+      const session = await playSessionRepository.create({
+        ticketCode: input.ticketCode,
+        status: PlaySessionStatus.ACTIVE,
+        childName: childNames.join(', '),
+        childNames,
+        childCount: childNames.length,
+        ...rate,
+        ...customer,
+        checkInAt,
+        checkInRecordedAt: now,
+        // The cashier is always taken from the authenticated session, never the client.
+        checkInCashierId: new Types.ObjectId(actor.id),
+        checkInCashierName: actor.name,
+        extras,
+        subscription,
+      });
+
+      await subscriptionService.recordReservation(session, actor);
+
+      return { session: toPublicSession(session), created: true };
+    } catch (err) {
+      // Whatever went wrong, this request's reservation is on no saved ticket.
+      if (subscription && subscription.creditsReserved > 0) {
+        await subscriptionService.undoReservation(subscription.subscriptionId, subscription.creditsReserved);
+      }
+      // Two syncs racing on the same ticket code: the loser reads back the winner's
+      // session instead of failing, keeping the retry safe end to end.
+      if ((err as { code?: number }).code === 11000) {
+        const raced = await playSessionRepository.findByTicketCode(input.ticketCode);
+        if (raced) return { session: toPublicSession(raced), created: false };
+      }
+      throw err;
+    }
+  },
+
+  /** A package's rate as a session snapshot, refusing a missing or inactive package. */
+  async packageRateFor(playPackageId: string) {
+    const pkg = await playPackageRepository.findById(playPackageId);
     if (!pkg) {
       throw new InvalidPlayPackageError('The selected play package does not exist');
     }
     if (!pkg.isActive) {
       throw new InvalidPlayPackageError('The selected play package is not currently available');
     }
-
-    const now = new Date();
-    const checkInAt = this.resolveCheckInAt(input.checkInAt, now, resolveMaximumSessionHours(settings));
-    const extras = await snapshotExtras(input.extras ?? [], actor, checkInAt);
 
     // Read through the same resolver the session uses, so the snapshot is already
     // normalised (grace 0 under PRORATA) rather than a raw copy of the package.
@@ -222,48 +432,19 @@ export const playSessionService = {
       tieredPricing: resolveTieredPricing(pkg),
     });
 
-    // Validation guarantees exactly one of the two is present.
-    const childNames = input.childNames ?? [input.childName as string];
-
-    try {
-      const session = await playSessionRepository.create({
-        ticketCode: input.ticketCode,
-        status: PlaySessionStatus.ACTIVE,
-        childName: childNames.join(', '),
-        childNames,
-        childCount: childNames.length,
-        playPackageId: pkg._id,
-        packageName: pkg.name,
-        rateDurationMinutes: pkg.durationMinutes,
-        unitPrice: pkg.price,
-        pricingMode: packageRate.pricingMode,
-        // Normalised at snapshot time: the package keeps its grace value so flipping the
-        // mode back does not lose it, but a PRORATA session carries 0, so even a client
-        // that forgets to check the mode cannot misprice from this snapshot.
-        graceMinutes: packageRate.graceMinutes,
-        // The whole tier table, so a later edit to the package never reprices this child.
-        tieredPricing: packageRate.tieredPricing,
-        customerId: input.customer?.customerId ? new Types.ObjectId(input.customer.customerId) : null,
-        parentName: input.customer?.parentName ?? '',
-        phoneNumber: input.customer?.phoneNumber ?? '',
-        checkInAt,
-        checkInRecordedAt: now,
-        // The cashier is always taken from the authenticated session, never the client.
-        checkInCashierId: new Types.ObjectId(actor.id),
-        checkInCashierName: actor.name,
-        extras,
-      });
-
-      return { session: toPublicSession(session), created: true };
-    } catch (err) {
-      // Two syncs racing on the same ticket code: the loser reads back the winner's
-      // session instead of failing, keeping the retry safe end to end.
-      if ((err as { code?: number }).code === 11000) {
-        const raced = await playSessionRepository.findByTicketCode(input.ticketCode);
-        if (raced) return { session: toPublicSession(raced), created: false };
-      }
-      throw err;
-    }
+    return {
+      playPackageId: pkg._id,
+      packageName: pkg.name,
+      rateDurationMinutes: pkg.durationMinutes,
+      unitPrice: pkg.price,
+      pricingMode: packageRate.pricingMode,
+      // Normalised at snapshot time: the package keeps its grace value so flipping the
+      // mode back does not lose it, but a PRORATA session carries 0, so even a client
+      // that forgets to check the mode cannot misprice from this snapshot.
+      graceMinutes: packageRate.graceMinutes,
+      // The whole tier table, so a later edit to the package never reprices this child.
+      tieredPricing: packageRate.tieredPricing,
+    };
   },
 
   /**
@@ -318,12 +499,18 @@ export const playSessionService = {
     }
 
     const settings = await settingsService.getRaw();
+    const balances = await subscriptionBalances([session]);
     return {
       session: toPublicSession(session),
-      quote: quoteSession(session, asOf, {
-        minimumBillableMinutes: resolveMinimumBillableMinutes(settings),
-        maximumSessionHours: resolveMaximumSessionHours(settings),
-      }),
+      quote: quoteSession(
+        session,
+        asOf,
+        {
+          minimumBillableMinutes: resolveMinimumBillableMinutes(settings),
+          maximumSessionHours: resolveMaximumSessionHours(settings),
+        },
+        balanceFor(session, balances),
+      ),
     };
   },
 
@@ -335,13 +522,16 @@ export const playSessionService = {
       minimumBillableMinutes: resolveMinimumBillableMinutes(settings),
       maximumSessionHours: resolveMaximumSessionHours(settings),
     };
+    const balances = await subscriptionBalances(
+      sessions.filter((session) => session.status === PlaySessionStatus.ACTIVE),
+    );
 
     return {
       sessions: sessions.map((session) => ({
         session: toPublicSession(session),
         quote:
           session.status === PlaySessionStatus.ACTIVE
-            ? quoteSession(session, asOf, quoteSettings)
+            ? quoteSession(session, asOf, quoteSettings, balanceFor(session, balances))
             : null,
       })),
       meta: buildPaginationMeta({ page: query.page, limit: query.limit }, total),
@@ -469,6 +659,9 @@ export const playSessionService = {
     if (!updated) {
       throw new InvalidStateError('This session is no longer active - it may have just been checked out');
     }
+
+    // A voided ticket was never a visit, so whatever credits it reserved go back.
+    if (updated.subscription) await subscriptionService.releaseReservationForVoid(updated._id, actor);
 
     await auditLogService.record({
       userId: actor.id,

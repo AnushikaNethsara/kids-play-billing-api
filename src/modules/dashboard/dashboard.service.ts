@@ -33,6 +33,7 @@ import {
   PLAY_LINES_ONLY,
   minimumAppliedExpr,
   SESSION_CHILD_COUNT,
+  IS_SUBSCRIPTION_TICKET,
 } from '../../common/reporting/billFilters';
 
 async function resolveRange(query: DashboardQuery) {
@@ -40,6 +41,20 @@ async function resolveRange(query: DashboardQuery) {
   const { start, end } = resolveDateRange(settings.timezone, query);
   return { start, end, timezone: settings.timezone };
 }
+
+/**
+ * What a closed session was charged, as an expression over a PlaySession document. Read
+ * off the amount frozen at checkout rather than recomputed: two pricing models re-expressed
+ * in a pipeline would be a third copy of the rules in the least testable language
+ * available. Sessions closed before `chargedAmount` existed were all pro-rata, so the old
+ * expression stays as their fallback and reproduces exactly what was reported before.
+ */
+const SESSION_CHARGED_AMOUNT = {
+  $ifNull: [
+    '$chargedAmount',
+    { $round: [{ $divide: [{ $multiply: ['$unitPrice', '$billedMinutes'] }, '$rateDurationMinutes'] }, 0] },
+  ],
+} as const;
 
 export const dashboardService = {
   async getSummary(query: DashboardQuery): Promise<DashboardSummary> {
@@ -168,7 +183,9 @@ export const dashboardService = {
         play: byKind.get(BillItemKind.PLAY)?.revenue ?? 0,
         group: byKind.get(BillItemKind.GROUP)?.revenue ?? 0,
         product: byKind.get(BillItemKind.PRODUCT)?.revenue ?? 0,
+        subscription: byKind.get(BillItemKind.SUBSCRIPTION)?.revenue ?? 0,
       },
+      subscriptionsSold: byKind.get(BillItemKind.SUBSCRIPTION)?.lines ?? 0,
       groupVisits: {
         count: byKind.get(BillItemKind.GROUP)?.lines ?? 0,
         headcount: byKind.get(BillItemKind.GROUP)?.quantity ?? 0,
@@ -376,7 +393,9 @@ export const dashboardService = {
       totalPlayMinutes: number;
       longestPlayMinutes: number;
       minimumAppliedCount: number;
-      revenue: number;
+      paidPlayMinutes: number;
+      paidRevenue: number;
+      subscriptionChildCount: number;
     }>([
       { $match: closedMatch },
       {
@@ -391,29 +410,16 @@ export const dashboardService = {
           // A session billed at exactly the minimum is one where the child left early
           // enough for the floor to bite; see minimumAppliedExpr for which sessions count.
           minimumAppliedCount: { $sum: minimumAppliedExpr(minimumBillableMinutes) },
-          // Read the amount frozen at checkout rather than recomputing it. Two pricing
-          // models re-expressed in a pipeline would be a third copy of the rules in the
-          // least testable language available; sessions closed before `chargedAmount`
-          // existed were all pro-rata, so the old expression stays as their fallback and
-          // reproduces exactly what this reported before.
-          revenue: {
-            $sum: {
-              $ifNull: [
-                '$chargedAmount',
-                {
-                  $round: [
-                    {
-                      $divide: [
-                        { $multiply: ['$unitPrice', '$billedMinutes'] },
-                        '$rateDurationMinutes',
-                      ],
-                    },
-                    0,
-                  ],
-                },
-              ],
-            },
+          // Play and money without the tickets paid for in subscription credits, whose
+          // money was taken when the subscription was sold. Counting their hours against
+          // revenue they never carried would understate what an hour earns.
+          paidPlayMinutes: {
+            $sum: { $cond: [IS_SUBSCRIPTION_TICKET, 0, { $multiply: ['$billedMinutes', SESSION_CHILD_COUNT] }] },
           },
+          paidRevenue: {
+            $sum: { $cond: [IS_SUBSCRIPTION_TICKET, 0, SESSION_CHARGED_AMOUNT] },
+          },
+          subscriptionChildCount: { $sum: { $cond: [IS_SUBSCRIPTION_TICKET, SESSION_CHILD_COUNT, 0] } },
         },
       },
     ]);
@@ -443,8 +449,8 @@ export const dashboardService = {
     const sessionCount = totals?.sessionCount ?? 0;
     const childCount = totals?.childCount ?? 0;
     const totalPlayMinutes = totals?.totalPlayMinutes ?? 0;
-    const revenue = totals?.revenue ?? 0;
-    const playHours = totalPlayMinutes / 60;
+    const paidPlayHours = (totals?.paidPlayMinutes ?? 0) / 60;
+    const paidRevenue = totals?.paidRevenue ?? 0;
 
     return {
       sessionCount,
@@ -453,7 +459,8 @@ export const dashboardService = {
       averagePlayMinutes: childCount > 0 ? Math.round(totalPlayMinutes / childCount) : 0,
       longestPlayMinutes: totals?.longestPlayMinutes ?? 0,
       minimumAppliedCount: totals?.minimumAppliedCount ?? 0,
-      revenuePerPlayHour: playHours > 0 ? Math.round(revenue / playHours) : 0,
+      revenuePerPlayHour: paidPlayHours > 0 ? Math.round(paidRevenue / paidPlayHours) : 0,
+      subscriptionChildCount: totals?.subscriptionChildCount ?? 0,
       voidedCount: voidsByCashier.reduce((sum, row) => sum + row.voidedCount, 0),
       voidsByCashier: voidsByCashier.map((row) => ({
         cashierId: row._id?.toString() ?? '',

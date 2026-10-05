@@ -59,7 +59,10 @@ export const checkInSchema = z
       .min(1, 'At least one child is required')
       .max(MAX_CHILDREN_PER_TICKET, `A ticket can cover at most ${MAX_CHILDREN_PER_TICKET} children`)
       .optional(),
-    playPackageId: z.string().length(24, 'Invalid play package id'),
+    // Exactly one of the two: a ticket is either on a package or paid for with a
+    // subscription's credits.
+    playPackageId: z.string().length(24, 'Invalid play package id').optional(),
+    subscriptionId: z.string().length(24, 'Invalid subscription id').optional(),
     checkInAt: z.string().datetime({ offset: true }).optional(),
     customer: z
       .object({
@@ -73,6 +76,10 @@ export const checkInSchema = z
   .refine((body) => (body.childName === undefined) !== (body.childNames === undefined), {
     message: 'Send exactly one of childName or childNames',
     path: ['childNames'],
+  })
+  .refine((body) => (body.playPackageId === undefined) !== (body.subscriptionId === undefined), {
+    message: 'Send exactly one of playPackageId or subscriptionId',
+    path: ['playPackageId'],
   });
 
 export const voidSessionSchema = z.object({

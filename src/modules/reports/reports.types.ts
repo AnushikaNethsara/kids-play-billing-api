@@ -104,6 +104,7 @@ export interface BillRegisterRow {
   playAmount: number;
   groupAmount: number;
   productAmount: number;
+  subscriptionAmount: number;
   subtotal: number;
   discount: number;
   tax: number;
@@ -273,6 +274,7 @@ export interface PeriodBucket {
   playRevenue: number;
   groupRevenue: number;
   productRevenue: number;
+  subscriptionRevenue: number;
   cancelledCount: number;
   sessionCount: number;
   playMinutes: number;

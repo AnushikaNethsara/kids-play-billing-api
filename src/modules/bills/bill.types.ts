@@ -34,7 +34,23 @@ export interface CreateProductItemInput {
   quantity: number;
 }
 
-export type CreateBillItemInput = CreatePlayItemInput | CreateGroupItemInput | CreateProductItemInput;
+/**
+ * A monthly subscription sold to a family. Priced from the plan's current price and terms,
+ * snapshotted onto the line; the subscription itself is created when the bill is paid.
+ * A bill selling a subscription sells nothing else, and must carry the parent's phone.
+ */
+export interface CreateSubscriptionItemInput {
+  kind: typeof BillItemKind.SUBSCRIPTION;
+  subscriptionPlanId: string;
+  /** The children who may use it, one name each. */
+  children: string[];
+}
+
+export type CreateBillItemInput =
+  | CreatePlayItemInput
+  | CreateGroupItemInput
+  | CreateProductItemInput
+  | CreateSubscriptionItemInput;
 
 export interface CreateBillDiscountInput {
   type: DiscountType;
@@ -86,7 +102,11 @@ export interface UpdateBillInput {
 }
 
 export interface CompleteBillInput {
-  paymentMethod: PaymentMethod;
+  /**
+   * Required unless the bill comes to nothing - a checkout covered entirely by
+   * subscription credits - where there is no money to take and it is stored as null.
+   */
+  paymentMethod?: PaymentMethod;
   paidAmount?: number;
   /**
    * Admin-only. Dates the payment to the bill's checkout time instead of now, so a
@@ -153,6 +173,35 @@ export interface BillItemPublic {
   rawTotal: number | null;
   /** TIERED_HOURLY only: `lineTotal - rawTotal`. */
   roundingAdjustment: number | null;
+  /** SUBSCRIPTION lines only: the plan terms sold, and the card once payment created it. */
+  subscriptionSale: BillItemSubscriptionSalePublic | null;
+  /**
+   * A ticket paid for with subscription credits: what it used. Its `lineTotal` is only the
+   * cash shortfall, and the block fields above are null - credits are not money.
+   */
+  subscription: BillItemSubscriptionUsePublic | null;
+}
+
+export interface BillItemSubscriptionSalePublic {
+  planId: string;
+  visitCredits: number;
+  visitMinutes: number;
+  graceMinutes: number;
+  extraBlockPrice: number;
+  maxChildren: number | null;
+  children: string[];
+  subscriptionId: string | null;
+  code: string | null;
+  expiresAt: Date | null;
+}
+
+export interface BillItemSubscriptionUsePublic {
+  subscriptionId: string;
+  code: string;
+  creditsUsed: number;
+  shortfallBlocks: number;
+  creditsRemainingAfter: number;
+  rejectedReason: string | null;
 }
 
 export interface BillPublic {

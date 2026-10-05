@@ -43,13 +43,19 @@ router.use(authenticate);
  *                   phoneNumber: { type: string }
  *               items:
  *                 type: array
+ *                 description: >
+ *                   Each line has a kind - PLAY (default), GROUP, PRODUCT or SUBSCRIPTION. A SUBSCRIPTION
+ *                   line ({ kind, subscriptionPlanId, children[] }) must be the only line on the bill, and
+ *                   the bill needs the parent's phone; paying the bill creates the subscription.
  *                 items:
  *                   type: object
- *                   required: [childName, playPackageId]
  *                   properties:
+ *                     kind: { type: string, enum: [PLAY, GROUP, PRODUCT, SUBSCRIPTION], default: PLAY }
  *                     childName: { type: string, example: "Kasun" }
  *                     playPackageId: { type: string }
  *                     quantity: { type: integer, default: 1 }
+ *                     subscriptionPlanId: { type: string }
+ *                     children: { type: array, items: { type: string }, example: ["Amal", "Sara"] }
  *               discount:
  *                 type: object
  *                 properties:
@@ -231,9 +237,11 @@ router.patch(
  *         application/json:
  *           schema:
  *             type: object
- *             required: [paymentMethod]
  *             properties:
- *               paymentMethod: { type: string, enum: [CASH, CARD, BANK_TRANSFER, OTHER] }
+ *               paymentMethod:
+ *                 type: string
+ *                 enum: [CASH, CARD, BANK_TRANSFER, OTHER]
+ *                 description: Required unless the grand total is 0 (a checkout covered by subscription credits).
  *               paidAmount: { type: integer, description: "Defaults to the grand total if omitted" }
  *               backdateToCheckout:
  *                 type: boolean

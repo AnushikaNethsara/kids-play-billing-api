@@ -27,7 +27,13 @@ import {
   PaymentError,
   ValidationError,
 } from '../../common/errors';
-import { InvalidPlayPackageError, InvalidProductError } from './bill.errors';
+import { InvalidPlayPackageError, InvalidProductError, InvalidSubscriptionPlanError } from './bill.errors';
+import { subscriptionPlanRepository } from '../subscription-plans/subscriptionPlan.repository';
+import {
+  assertChildNames,
+  subscriptionService,
+  type CheckoutCreditsResult,
+} from '../subscriptions/subscription.service';
 import {
   calculateBillTotals,
   checkoutTimeOf,
@@ -46,6 +52,7 @@ import type {
   CreateGroupItemInput,
   CreatePlayItemInput,
   CreateProductItemInput,
+  CreateSubscriptionItemInput,
   CreateBillFromSessionsInput,
   UpdateBillInput,
   CompleteBillInput,
@@ -56,6 +63,7 @@ import type {
 } from './bill.types';
 import type { AuthenticatedUser } from '../../common/types/express';
 import { buildPaginationMeta } from '../../common/utils/pagination';
+import { logger } from '../../common/logger/logger';
 
 const MONGO_DUPLICATE_KEY_ERROR_CODE = 11000;
 
@@ -79,10 +87,15 @@ function toPublicItem(item: BillItemSubdocument): BillItemPublic {
   // Reproduced here rather than stored, from inputs that were all snapshotted at billing
   // time, so it is deterministic. Deriving at the boundary means no client ever works out
   // a block or tier split for itself, and `lineTotal` remains the one authority on the money.
+  //
+  // Not on a subscription ticket: its block-shaped rate is only the cash fallback, and a
+  // block split of it would describe money the family never paid.
   const breakdown =
-    pricingMode !== SessionPricingMode.PRORATA && item.billedMinutes !== null
+    pricingMode !== SessionPricingMode.PRORATA && item.billedMinutes !== null && !item.subscription
       ? priceSession(rate, item.billedMinutes)
       : null;
+  const sale = item.subscriptionSale ?? null;
+  const use = item.subscription ?? null;
 
   return {
     kind: resolveItemKind(item),
@@ -113,6 +126,30 @@ function toPublicItem(item: BillItemSubdocument): BillItemPublic {
     rawTotal: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.rawTotal ?? null) : null,
     roundingAdjustment:
       pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.roundingAdjustment ?? null) : null,
+    subscriptionSale: sale
+      ? {
+          planId: sale.planId.toString(),
+          visitCredits: sale.visitCredits,
+          visitMinutes: sale.visitMinutes,
+          graceMinutes: sale.graceMinutes,
+          extraBlockPrice: sale.extraBlockPrice,
+          maxChildren: sale.maxChildren ?? null,
+          children: [...sale.children],
+          subscriptionId: sale.subscriptionId ? sale.subscriptionId.toString() : null,
+          code: sale.code ?? null,
+          expiresAt: sale.expiresAt ?? null,
+        }
+      : null,
+    subscription: use
+      ? {
+          subscriptionId: use.subscriptionId.toString(),
+          code: use.code,
+          creditsUsed: use.creditsUsed,
+          shortfallBlocks: use.shortfallBlocks,
+          creditsRemainingAfter: use.creditsRemainingAfter,
+          rejectedReason: use.rejectedReason ?? null,
+        }
+      : null,
   };
 }
 
@@ -197,6 +234,36 @@ const NO_SESSION = {
   tieredPricing: null,
 } as const;
 
+/** The subscription fields every line that neither sells nor uses one leaves empty. */
+const NO_SUBSCRIPTION = {
+  subscriptionSale: null,
+  subscription: null,
+} as const;
+
+function sellsSubscription(items: { kind?: string | null }[]): boolean {
+  return items.some((item) => resolveItemKind(item) === BillItemKind.SUBSCRIPTION);
+}
+
+/**
+ * A subscription sale is a bill of its own, carrying the parent's phone: the subscription
+ * belongs to a family, and the phone is how the till finds that family again at the gate.
+ */
+function assertSubscriptionSaleShape(
+  items: { kind?: string | null }[],
+  customer: { customerId?: string | null; phoneNumber?: string | null },
+): void {
+  if (!sellsSubscription(items)) return;
+  if (items.some((item) => resolveItemKind(item) !== BillItemKind.SUBSCRIPTION)) {
+    throw new ValidationError('A subscription must be sold on a bill of its own');
+  }
+  if (items.length > 1) {
+    throw new ValidationError('Sell one subscription per bill');
+  }
+  if (!customer.customerId && !customer.phoneNumber) {
+    throw new ValidationError("The parent's phone number is required to sell a subscription");
+  }
+}
+
 /**
  * How old a cashier's group visit time may be. A cashier rings a group up at the till, so
  * the visit is today; the slack is for a device that took the bill offline and synced it
@@ -256,6 +323,52 @@ async function buildItemSnapshots(
         visitAt: resolveVisitAt(group.visitAt, actor, now),
         visitMinutes: group.visitMinutes,
         ...NO_SESSION,
+        ...NO_SUBSCRIPTION,
+      });
+      continue;
+    }
+
+    if (kind === BillItemKind.SUBSCRIPTION) {
+      const line = item as CreateSubscriptionItemInput;
+      const plan = await subscriptionPlanRepository.findById(line.subscriptionPlanId);
+      if (!plan) {
+        throw new InvalidSubscriptionPlanError('The selected subscription plan does not exist');
+      }
+      if (!plan.isActive) {
+        throw new InvalidSubscriptionPlanError(`${plan.name} is not currently on sale`);
+      }
+      const children = assertChildNames(line.children, plan.maxChildren ?? null);
+
+      snapshots.push({
+        kind,
+        childName: children.join(', '),
+        playPackageId: null,
+        packageName: plan.name,
+        // The visit length is a term of the plan, not a rate denominator - it is in
+        // `subscriptionSale`. 0 here so nothing reads this line as timed play.
+        durationMinutes: 0,
+        unitPrice: plan.price,
+        quantity: 1,
+        lineTotal: plan.price,
+        productId: null,
+        visitAt: null,
+        visitMinutes: null,
+        ...NO_SESSION,
+        // Every term snapshotted now, so the subscription created at payment is exactly
+        // what the family was quoted, whatever happens to the plan in between.
+        subscriptionSale: {
+          planId: plan._id,
+          visitCredits: plan.visitCredits,
+          visitMinutes: plan.visitMinutes,
+          graceMinutes: plan.graceMinutes ?? 0,
+          extraBlockPrice: plan.extraBlockPrice,
+          maxChildren: plan.maxChildren ?? null,
+          children,
+          subscriptionId: null,
+          code: null,
+          expiresAt: null,
+        },
+        subscription: null,
       });
       continue;
     }
@@ -286,6 +399,7 @@ async function buildItemSnapshots(
         visitAt: null,
         visitMinutes: null,
         ...NO_SESSION,
+        ...NO_SUBSCRIPTION,
       });
       continue;
     }
@@ -319,6 +433,7 @@ async function buildItemSnapshots(
       // Flat-price path: no session backs these items, and if an admin has since switched
       // this package to block pricing, that must not follow the line here.
       ...NO_SESSION,
+      ...NO_SUBSCRIPTION,
     });
   }
 
@@ -375,12 +490,18 @@ function extrasToItems(session: PlaySessionHydrated): BillItemSubdocument[] {
     visitAt: null,
     visitMinutes: null,
     ...NO_SESSION,
+    ...NO_SUBSCRIPTION,
   }));
 }
 
-async function releaseClaimedSessions(sessions: PlaySessionHydrated[]): Promise<void> {
+async function releaseClaimedSessions(sessions: PlaySessionHydrated[], actor: AuthenticatedUser): Promise<void> {
   for (const session of sessions) {
     try {
+      // Credits taken by this half-finished checkout go back first; they were never
+      // written to the ledger, so nothing is recorded for giving them back either.
+      if (session.subscription) {
+        await subscriptionService.returnCheckoutCredits(session._id, { ledger: false, actor, billId: null });
+      }
       await playSessionRepository.reopen(session._id);
     } catch {
       // A failed rollback must not mask the original error that triggered it. The
@@ -391,6 +512,7 @@ async function releaseClaimedSessions(sessions: PlaySessionHydrated[]): Promise<
 
 export const billService = {
   async createDraft(input: CreateBillInput, actor: AuthenticatedUser): Promise<BillPublic> {
+    assertSubscriptionSaleShape(input.items ?? [], input.customer ?? {});
     const settings = await settingsService.getRaw();
     const items = await buildItemSnapshots(input.items, actor);
 
@@ -470,6 +592,8 @@ export const billService = {
     const checkOutAt = resolveCheckOutAt(input.checkOutAt, now);
 
     const claimed: PlaySessionHydrated[] = [];
+    /** What each subscription ticket used, by session id. */
+    const checkoutCredits = new Map<string, CheckoutCreditsResult>();
 
     try {
       for (const ticketCode of ticketCodes) {
@@ -515,10 +639,34 @@ export const billService = {
         }
 
         claimed.push(claimedSession);
+
+        // A subscription ticket is charged in credits, taken only now the ticket is safely
+        // claimed - two cashiers scanning one slip must not both take them. The money is
+        // just the blocks no credit covered. `billedMinutes` is the time played: block
+        // pricing never applies the pro-rata minimum.
+        if (claimedSession.subscription) {
+          const result = await subscriptionService.takeCheckoutCredits(
+            claimedSession,
+            billedMinutes,
+            resolveChildCount(claimedSession),
+          );
+          checkoutCredits.set(claimedSession.id, result);
+          const frozen = await playSessionRepository.setSubscriptionCheckout(claimedSession._id, {
+            checkoutCredits: result.checkoutCredits,
+            creditsUsed: result.creditsUsed,
+            shortfallBlocks: result.shortfallBlocks,
+            chargedAmount: result.chargedAmount,
+          });
+          if (!frozen) {
+            throw new InvalidStateError(`Ticket ${ticketCode} changed while it was being checked out`);
+          }
+          claimed[claimed.length - 1] = frozen;
+        }
       }
 
       const items = claimed.flatMap<BillItemSubdocument>((session) => {
         const rate = resolveSessionRate(session);
+        const credits = checkoutCredits.get(session.id);
         const playLine: BillItemSubdocument = {
           kind: BillItemKind.PLAY,
           childName: session.childName,
@@ -543,6 +691,18 @@ export const billService = {
           checkInAt: session.checkInAt,
           checkOutAt: session.checkOutAt,
           billedMinutes: session.billedMinutes,
+          subscriptionSale: null,
+          subscription:
+            session.subscription && credits
+              ? {
+                  subscriptionId: session.subscription.subscriptionId,
+                  code: session.subscription.code,
+                  creditsUsed: credits.creditsUsed,
+                  shortfallBlocks: credits.shortfallBlocks,
+                  creditsRemainingAfter: credits.creditsRemainingAfter,
+                  rejectedReason: session.subscription.rejectedReason ?? null,
+                }
+              : null,
         };
         // Socks and the like sold while the child played are charged now, on the same
         // bill, directly after the child's own line.
@@ -603,6 +763,10 @@ export const billService = {
 
       for (const session of claimed) {
         await playSessionRepository.setBillId(session._id, bill._id);
+        const credits = checkoutCredits.get(session.id);
+        if (credits) {
+          await subscriptionService.recordCheckoutCredits(session, credits.checkoutCredits, bill._id, actor);
+        }
       }
 
       // An admin supplying an explicit exit time is closing a ticket someone abandoned,
@@ -626,7 +790,7 @@ export const billService = {
 
       return toPublicBill(bill);
     } catch (err) {
-      await releaseClaimedSessions(claimed);
+      await releaseClaimedSessions(claimed, actor);
       throw err;
     }
   },
@@ -662,7 +826,17 @@ export const billService = {
           'The lines of a checkout cannot be replaced - cancel it and check out again',
         );
       }
+      assertSubscriptionSaleShape(input.items, {
+        customerId: bill.customerId?.toString(),
+        phoneNumber: bill.phoneNumber,
+      });
       bill.items = await buildItemSnapshots(input.items, actor);
+    } else {
+      // The lines are unchanged, but the customer may have been cleared off a sale.
+      assertSubscriptionSaleShape(bill.items, {
+        customerId: bill.customerId?.toString(),
+        phoneNumber: bill.phoneNumber,
+      });
     }
 
     const discountType = input.discount?.type ?? bill.discountType;
@@ -757,6 +931,16 @@ export const billService = {
       taxPercentage: settings.taxPercentage,
     });
 
+    // Only a bill that comes to nothing - a checkout covered entirely by subscription
+    // credits - may be completed without saying how it was paid.
+    if (!input.paymentMethod && totals.grandTotal > 0) {
+      throw new ValidationError('A payment method is required');
+    }
+    assertSubscriptionSaleShape(bill.items, {
+      customerId: bill.customerId?.toString(),
+      phoneNumber: bill.phoneNumber,
+    });
+
     const paidAmount = input.paidAmount ?? totals.grandTotal;
     if (paidAmount < totals.grandTotal) {
       throw new PaymentError('Paid amount is less than the grand total');
@@ -785,7 +969,7 @@ export const billService = {
       grandTotal: totals.grandTotal,
       paidAmount,
       balance,
-      paymentMethod: input.paymentMethod,
+      paymentMethod: input.paymentMethod ?? null,
       paidAt,
       ...(backdated
         ? {
@@ -878,6 +1062,17 @@ export const billService = {
       }
     }
 
+    // Paying for a subscription is what creates it. After the customer is linked, because
+    // a subscription belongs to the family. Should this fail, the money is still taken and
+    // the startup sweep creates it - so the sale is never lost, only delayed.
+    if (sellsSubscription(updated.items)) {
+      try {
+        await subscriptionService.ensureForBill(updated, actor);
+      } catch (err) {
+        logger.error({ err, billId: updated.id }, 'Subscription not created at payment; left for the sweep');
+      }
+    }
+
     return toPublicBill(updated);
   },
 
@@ -900,6 +1095,13 @@ export const billService = {
 
     const before = toPublicBill(bill);
 
+    // A paid subscription sale can be cancelled only while its subscription is unused -
+    // there are no refunds, so once a credit is spent the sale stands. Cancelled first, so
+    // a credit spent a moment ago stops the bill being cancelled, not the other way round.
+    const cancelledSubscriptions = sellsSubscription(bill.items)
+      ? await subscriptionService.cancelForSaleBill(bill._id, actor, input.reason)
+      : [];
+
     const updated = await billRepository.transitionIfStatusIn(id, allowedStatuses, {
       status: BillStatus.CANCELLED,
       cancelledAt: new Date(),
@@ -908,15 +1110,28 @@ export const billService = {
     });
 
     if (!updated) {
+      await subscriptionService.undoCancel(cancelledSubscriptions);
       throw new InvalidStateError('This bill cannot be cancelled from its current status');
     }
+
+    await subscriptionService.auditCancelled(cancelledSubscriptions, actor, updated.id);
 
     // Reopen any sessions this bill claimed: cancelling a checkout means the cashier
     // scanned the wrong ticket or the family is staying longer, so the children are
     // still playing and their tickets must become billable again. A refund deliberately
     // does not do this - there, the visit really did happen and has been paid for.
+    // A subscription ticket gives back the credits its checkout took; the time is counted
+    // again at the next checkout.
     const sessions = await playSessionRepository.findByBillId(updated.id);
     for (const session of sessions) {
+      if (session.subscription) {
+        await subscriptionService.returnCheckoutCredits(session._id, {
+          ledger: true,
+          actor,
+          billId: updated._id,
+          reason: input.reason,
+        });
+      }
       await playSessionRepository.reopen(session._id);
     }
 
@@ -946,6 +1161,11 @@ export const billService = {
 
     if (bill.status !== BillStatus.PAID) {
       throw new InvalidStateError('Only paid bills can be refunded');
+    }
+    if (sellsSubscription(bill.items)) {
+      throw new InvalidStateError(
+        'Subscriptions are not refundable. An unused subscription sold by mistake can be cancelled instead',
+      );
     }
 
     const before = toPublicBill(bill);

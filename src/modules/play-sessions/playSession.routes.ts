@@ -39,7 +39,8 @@ router.use(authenticate);
  *         application/json:
  *           schema:
  *             type: object
- *             required: [ticketCode, playPackageId]
+ *             required: [ticketCode]
+ *             description: Send exactly one of playPackageId or subscriptionId.
  *             properties:
  *               ticketCode:
  *                 type: string
@@ -52,6 +53,12 @@ router.use(authenticate);
  *                 maxItems: 10
  *                 items: { type: string }
  *               playPackageId: { type: string }
+ *               subscriptionId:
+ *                 type: string
+ *                 description: >
+ *                   Pay with subscription credits, one per child; the children must be named on it.
+ *                   Never refused for want of credits - the session is accepted with
+ *                   subscription.rejectedReason set and is charged at the plan's extra block price.
  *               checkInAt:
  *                 type: string
  *                 format: date-time

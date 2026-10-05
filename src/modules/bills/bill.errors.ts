@@ -21,3 +21,9 @@ export class InvalidProductError extends AppError {
     super(message, 422, 'INVALID_PRODUCT');
   }
 }
+
+export class InvalidSubscriptionPlanError extends AppError {
+  constructor(message = 'The selected subscription plan is not available') {
+    super(message, 422, 'INVALID_SUBSCRIPTION_PLAN');
+  }
+}

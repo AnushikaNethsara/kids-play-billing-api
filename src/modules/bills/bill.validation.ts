@@ -4,6 +4,7 @@ import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { BillItemKind } from '../../common/constants/billItemKind';
 import { ticketCodeSchema } from '../play-sessions/playSession.validation';
+import { subscriptionChildrenSchema } from '../subscriptions/subscription.validation';
 
 const objectIdSchema = z.string().length(24, 'Invalid id');
 
@@ -43,6 +44,12 @@ const productItemSchema = z.object({
   quantity: z.number().int().min(1).max(MAX_PRODUCT_QUANTITY),
 });
 
+const subscriptionItemSchema = z.object({
+  kind: z.literal(BillItemKind.SUBSCRIPTION),
+  subscriptionPlanId: objectIdSchema,
+  children: subscriptionChildrenSchema,
+});
+
 /**
  * A line on `POST /bills`. Clients written before kinds existed send no `kind`, and every
  * one of those lines is a child on a package - so a missing kind is filled in as PLAY
@@ -53,7 +60,7 @@ export const createBillItemSchema = z.preprocess(
     value && typeof value === 'object' && !('kind' in value)
       ? { ...(value as object), kind: BillItemKind.PLAY }
       : value,
-  z.discriminatedUnion('kind', [playItemSchema, groupItemSchema, productItemSchema]),
+  z.discriminatedUnion('kind', [playItemSchema, groupItemSchema, productItemSchema, subscriptionItemSchema]),
 );
 
 export const createBillDiscountSchema = z.object({
@@ -110,7 +117,9 @@ export const updateBillSchema = z
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field is required' });
 
 export const completeBillSchema = z.object({
-  paymentMethod: z.nativeEnum(PaymentMethod),
+  // Optional only so a bill covered entirely by subscription credits can be completed;
+  // the service refuses a missing method on any bill that has money to take.
+  paymentMethod: z.nativeEnum(PaymentMethod).optional(),
   paidAmount: z.number().int().min(0).optional(),
   backdateToCheckout: z.boolean().optional(),
 });

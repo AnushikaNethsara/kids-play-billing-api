@@ -37,9 +37,13 @@ export interface DashboardSummary {
   topCashier: { cashierId: string; cashierName: string; revenue: number; billCount: number } | null;
   /**
    * Line totals by kind of line, before bill-level discount and tax - what play, group
-   * visits and counter sales each brought in. Sums to `grossRevenue`.
+   * visits, counter sales and subscription sales each brought in. Sums to `grossRevenue`.
+   * A visit paid for with subscription credits is play worth 0 here: its money was taken
+   * when the subscription was sold, under `subscription`.
    */
-  revenueByKind: { play: number; group: number; product: number };
+  revenueByKind: { play: number; group: number; product: number; subscription: number };
+  /** Subscriptions sold in the period. */
+  subscriptionsSold: number;
   /** Group lines in the period, and the children they brought between them. */
   groupVisits: { count: number; headcount: number };
   /** Units sold across every product. */
@@ -69,8 +73,13 @@ export interface SessionSummary {
   longestPlayMinutes: number;
   /** How often the configured minimum had to be applied - is the minimum set right? */
   minimumAppliedCount: number;
-  /** Revenue per hour of play, a truer efficiency measure than revenue per bill. */
+  /**
+   * Revenue per hour of play, a truer efficiency measure than revenue per bill. Over paid
+   * tickets only: a visit on subscription credits brought its money in at the sale.
+   */
   revenuePerPlayHour: number;
+  /** Children who played on subscription credits, included in `childCount`. */
+  subscriptionChildCount: number;
   voidedCount: number;
   voidsByCashier: { cashierId: string; cashierName: string; voidedCount: number }[];
 }

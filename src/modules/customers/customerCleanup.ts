@@ -6,6 +6,7 @@ import { PlaySessionModel } from '../play-sessions/playSession.model';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
 import { normalizePhone } from '../../common/utils/phone';
+import { subscriptionRepository } from '../subscriptions/subscription.repository';
 
 /**
  * One-off repair of customer data written before phone numbers were normalised, run by
@@ -226,6 +227,13 @@ export async function runCustomerCleanup(options: { apply: boolean }): Promise<C
   }
   for (let i = 0; i < sessionPlan.ops.length; i += BATCH_SIZE) {
     await PlaySessionModel.bulkWrite(sessionPlan.ops.slice(i, i + BATCH_SIZE).map(toUpdate));
+  }
+
+  // A duplicate's subscriptions follow it to the survivor, like its bills and tickets.
+  for (const merge of report.merges) {
+    for (const mergedId of merge.mergedIds) {
+      await subscriptionRepository.repointCustomer(mergedId, merge.keptId);
+    }
   }
 
   for (const merge of report.merges) {

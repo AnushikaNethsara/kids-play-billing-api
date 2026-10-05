@@ -10,6 +10,8 @@ import { dashboardRoutes } from '../modules/dashboard/dashboard.routes';
 import { settingsRoutes } from '../modules/settings/settings.routes';
 import { auditLogRoutes } from '../modules/audit-logs/auditLog.routes';
 import { reportRoutes } from '../modules/reports/reports.routes';
+import { subscriptionPlanRoutes } from '../modules/subscription-plans/subscriptionPlan.routes';
+import { subscriptionRoutes } from '../modules/subscriptions/subscription.routes';
 
 const router = Router();
 
@@ -24,5 +26,7 @@ router.use('/dashboard', dashboardRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/audit-logs', auditLogRoutes);
 router.use('/reports', reportRoutes);
+router.use('/subscription-plans', subscriptionPlanRoutes);
+router.use('/subscriptions', subscriptionRoutes);
 
 export const apiRouter = router;

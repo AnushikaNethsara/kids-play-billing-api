@@ -25,6 +25,7 @@ import type {
   CustomerVisitRow,
   ListCustomerVisitsQuery,
 } from './customer.types';
+import { subscriptionService } from '../subscriptions/subscription.service';
 
 /** How many of a family's children the till suggests. */
 const USUAL_CHILDREN = 4;
@@ -254,6 +255,7 @@ export const customerInsightsService = {
 
     const interval = resolveLoyaltyVisitInterval(settings);
     const nextVisitNumber = visitedToday ? days.length : days.length + 1;
+    const subscriptions = await subscriptionService.listForCustomer(customer.id);
 
     return {
       customerId: customer.id,
@@ -268,6 +270,7 @@ export const customerInsightsService = {
         nextVisitNumber,
         rewardDue: interval > 0 && nextVisitNumber % interval === 0,
       },
+      subscriptions,
     };
   },
 

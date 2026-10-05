@@ -54,6 +54,7 @@ const options: swaggerJsdoc.Options = {
       { name: 'Play Packages', description: 'Configurable play-duration pricing' },
       { name: 'Customers', description: 'Optional parent/child customer records' },
       { name: 'Bills', description: 'The core billing lifecycle: draft, complete, cancel, refund' },
+      { name: 'Subscriptions', description: 'Monthly visit-credit plans, the subscriptions sold from them, and their credit ledgers' },
       { name: 'Dashboard', description: 'Admin-only revenue and business statistics' },
       { name: 'Settings', description: 'Business-wide configuration' },
       { name: 'Audit Logs', description: 'Admin-only trail of sensitive actions' },

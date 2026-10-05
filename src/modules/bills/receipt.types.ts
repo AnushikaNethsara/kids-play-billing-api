@@ -45,6 +45,24 @@ export interface ReceiptItem {
   visitDate?: string;
   visitTime?: string;
   visitDuration?: string;
+  /**
+   * SUBSCRIPTION lines only: the card sold. `code` and `validUntil` are null until payment
+   * has created the subscription. `validUntil` is pre-formatted in the business timezone.
+   */
+  subscriptionSale?: {
+    code: string | null;
+    validUntil: string | null;
+    visitCredits: number;
+    visitDuration: string;
+    children: string[];
+  };
+  /** A ticket paid for with subscription credits: what it used and what is left. */
+  subscriptionUse?: {
+    code: string;
+    creditsUsed: number;
+    creditsRemaining: number;
+    shortfallBlocks: number;
+  };
 }
 
 export interface ReceiptData {

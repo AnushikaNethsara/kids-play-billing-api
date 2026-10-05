@@ -9,6 +9,41 @@ import { tieredPricingSchema } from '../play-packages/tieredPricing.schema';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { BillItemKind } from '../../common/constants/billItemKind';
 
+/**
+ * The plan terms a SUBSCRIPTION line sold, snapshotted when the draft was built so the
+ * subscription created at payment carries exactly what the customer was quoted, even if an
+ * admin edits the plan between draft and payment. `subscriptionId`, `code` and `expiresAt`
+ * are written back once payment has created the subscription, so the receipt can print
+ * them without a second lookup.
+ */
+export interface BillItemSubscriptionSaleSubdocument {
+  planId: Types.ObjectId;
+  visitCredits: number;
+  visitMinutes: number;
+  graceMinutes: number;
+  extraBlockPrice: number;
+  maxChildren: number | null;
+  children: string[];
+  subscriptionId: Types.ObjectId | null;
+  code: string | null;
+  expiresAt: Date | null;
+}
+
+/**
+ * On a ticket paid for with subscription credits: what it used, frozen at checkout. The
+ * line's `lineTotal` is only the cash part - `shortfallBlocks x unitPrice`, where
+ * `unitPrice` is the plan's extra block price - and is usually 0.
+ */
+export interface BillItemSubscriptionUseSubdocument {
+  subscriptionId: Types.ObjectId;
+  code: string;
+  creditsUsed: number;
+  shortfallBlocks: number;
+  /** Credits the family had left straight after this checkout, for the receipt. */
+  creditsRemainingAfter: number;
+  rejectedReason: string | null;
+}
+
 export interface BillItemSubdocument {
   /**
    * What the line is for - see BillItemKind. Absent on every line written before kinds
@@ -75,6 +110,11 @@ export interface BillItemSubdocument {
    * line. `lineTotal` already includes the rounding.
    */
   tieredPricing: TieredPricing | null;
+
+  /** SUBSCRIPTION lines only. Null on every other line. */
+  subscriptionSale: BillItemSubscriptionSaleSubdocument | null;
+  /** A ticket paid for with subscription credits. Null on every other line. */
+  subscription: BillItemSubscriptionUseSubdocument | null;
 }
 
 export interface BillDocument {
@@ -137,6 +177,34 @@ export interface BillDocument {
 
 export type BillHydrated = HydratedDocument<BillDocument>;
 
+const billItemSubscriptionSaleSchema = new Schema<BillItemSubscriptionSaleSubdocument>(
+  {
+    planId: { type: Schema.Types.ObjectId, ref: 'SubscriptionPlan', required: true },
+    visitCredits: { type: Number, required: true, min: 1 },
+    visitMinutes: { type: Number, required: true, min: 1 },
+    graceMinutes: { type: Number, default: 0, min: 0 },
+    extraBlockPrice: { type: Number, required: true, min: 0 },
+    maxChildren: { type: Number, default: null },
+    children: { type: [String], default: [] },
+    subscriptionId: { type: Schema.Types.ObjectId, ref: 'Subscription', default: null },
+    code: { type: String, default: null },
+    expiresAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
+const billItemSubscriptionUseSchema = new Schema<BillItemSubscriptionUseSubdocument>(
+  {
+    subscriptionId: { type: Schema.Types.ObjectId, ref: 'Subscription', required: true },
+    code: { type: String, required: true },
+    creditsUsed: { type: Number, required: true, min: 0 },
+    shortfallBlocks: { type: Number, required: true, min: 0 },
+    creditsRemainingAfter: { type: Number, required: true },
+    rejectedReason: { type: String, default: null },
+  },
+  { _id: false },
+);
+
 const billItemSchema = new Schema<BillItemSubdocument>(
   {
     kind: { type: String, enum: Object.values(BillItemKind), default: BillItemKind.PLAY },
@@ -165,6 +233,8 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     },
     graceMinutes: { type: Number, default: 0 },
     tieredPricing: { type: tieredPricingSchema, default: null },
+    subscriptionSale: { type: billItemSubscriptionSaleSchema, default: null },
+    subscription: { type: billItemSubscriptionUseSchema, default: null },
   },
   { _id: false },
 );

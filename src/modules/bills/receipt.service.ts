@@ -108,6 +108,22 @@ export const receiptService = {
           }
           if (kind === BillItemKind.PRODUCT) return receiptItem;
 
+          if (kind === BillItemKind.SUBSCRIPTION) {
+            const sale = item.subscriptionSale;
+            if (sale) {
+              receiptItem.subscriptionSale = {
+                code: sale.code ?? null,
+                validUntil: sale.expiresAt
+                  ? DateTime.fromJSDate(sale.expiresAt).setZone(settings.timezone).toFormat('dd/MM/yyyy')
+                  : null,
+                visitCredits: sale.visitCredits,
+                visitDuration: formatDuration(sale.visitMinutes),
+                children: [...sale.children],
+              };
+            }
+            return receiptItem;
+          }
+
           // Only session-billed items carry times; legacy flat-price items have none and
           // fall through to the original layout untouched.
           if (item.billedMinutes !== null && item.billedMinutes !== undefined) {
@@ -123,6 +139,18 @@ export const receiptService = {
             receiptItem.checkOutTime = DateTime.fromJSDate(item.checkOutAt)
               .setZone(settings.timezone)
               .toFormat('hh:mm a');
+          }
+
+          // Paid for in credits: what it used is the story, not a block split of the cash
+          // fallback rate, which would describe money nobody was charged.
+          if (item.subscription) {
+            receiptItem.subscriptionUse = {
+              code: item.subscription.code,
+              creditsUsed: item.subscription.creditsUsed,
+              creditsRemaining: item.subscription.creditsRemainingAfter,
+              shortfallBlocks: item.subscription.shortfallBlocks,
+            };
+            return receiptItem;
           }
 
           const rate = resolveSessionRate({
@@ -248,6 +276,45 @@ export const receiptService = {
         continue;
       }
 
+      if (item.kind === BillItemKind.SUBSCRIPTION) {
+        // The card the family takes away: what it buys, for whom, and until when.
+        const sale = item.subscriptionSale;
+        lines.push(...labelledAmount(`Subscription: ${item.packageName}`, formatMoney(item.lineTotal), width));
+        if (sale) {
+          lines.push(...wrapText(`  ${sale.visitCredits} visits x ${sale.visitDuration}`, width));
+          if (sale.children.length > 0) lines.push(...wrapText(`  For: ${sale.children.join(', ')}`, width));
+          if (sale.validUntil) lines.push(...wrapText(`  Valid until ${sale.validUntil}`, width));
+          if (sale.code) lines.push(...wrapText(`  Card: ${sale.code}`, width));
+        }
+        continue;
+      }
+
+      if (item.subscriptionUse) {
+        const use = item.subscriptionUse;
+        lines.push(
+          ...wrapText(item.quantity > 1 ? `Children (${item.quantity}): ${item.childName}` : `Child: ${item.childName}`, width),
+        );
+        if (item.checkInTime && item.checkOutTime) {
+          lines.push(...wrapText(`In ${item.checkInTime}  Out ${item.checkOutTime}`, width));
+        }
+        if (item.billedDuration) lines.push(...wrapText(`Time: ${item.billedDuration}`, width));
+        lines.push(...wrapText(`Subscription ${use.code}`, width));
+        lines.push(
+          twoColumnLine(`  ${use.creditsUsed} ${use.creditsUsed === 1 ? 'visit' : 'visits'} used`, `${use.creditsRemaining} left`, width),
+        );
+        if (use.shortfallBlocks > 0) {
+          lines.push(
+            twoColumnLine(
+              `  Extra ${use.shortfallBlocks} x ${formatDuration(item.durationMinutes)}`,
+              formatMoney(item.lineTotal),
+              width,
+            ),
+          );
+        }
+        lines.push(twoColumnLine(item.packageName, formatMoney(item.lineTotal), width));
+        continue;
+      }
+
       // A family ticket: several children on one line, every row below priced per child.
       const isFamilyTicket = Boolean(item.billedMinutes) && item.quantity > 1;
       lines.push(
@@ -316,6 +383,7 @@ export const receiptService = {
     lines.push(twoColumnLine('Paid', formatMoney(data.bill.paidAmount), width));
     lines.push(twoColumnLine('Balance', formatMoney(data.bill.balance), width));
     if (data.bill.paymentMethod) lines.push(`Payment: ${data.bill.paymentMethod}`);
+    else if (data.bill.items.some((item) => item.subscriptionUse)) lines.push('Covered by subscription');
     lines.push(dashLine(width));
 
     lines.push(centerText(data.receipt.footer, width));

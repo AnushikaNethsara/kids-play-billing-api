@@ -44,7 +44,7 @@ export const ITEM_KIND = { $ifNull: ['$$item.kind', BillItemKind.PLAY] } as cons
 /**
  * Children through the door on a bill: one per fixed-price PLAY line, the children on a
  * checked-out ticket (its `quantity` - a family ticket covers several), the headcount of
- * a GROUP line, and nobody for a pair of socks. Counting lines, as this used to, would report a group of
+ * a GROUP line, and nobody for a pair of socks or a subscription sale. Counting lines, as this used to, would report a group of
  * twenty as one child and every pair of socks as another.
  *
  * An expression over one bill, not an accumulator: inside `$group` it has to be wrapped in
@@ -60,6 +60,9 @@ export const CHILDREN_ON_BILL = {
           branches: [
             { case: { $eq: [ITEM_KIND, BillItemKind.GROUP] }, then: '$$item.quantity' },
             { case: { $eq: [ITEM_KIND, BillItemKind.PRODUCT] }, then: 0 },
+            // Selling a subscription brings nobody through the door; its visits are counted
+            // on the tickets that use it.
+            { case: { $eq: [ITEM_KIND, BillItemKind.SUBSCRIPTION] }, then: 0 },
             // A ticket line. Every ticket before family tickets was billed at quantity 1,
             // so this reproduces the old count for them.
             {
@@ -89,9 +92,18 @@ export const SESSION_CHILD_NAMES = {
   $cond: [{ $gt: [{ $size: { $ifNull: ['$childNames', []] } }, 0] }, '$childNames', ['$childName']],
 } as const;
 
-/** After `$unwind: '$items'`: keeps only the lines that are a child on a play package. */
+/**
+ * After `$unwind: '$items'`: keeps only the lines that are a child on a play package.
+ *
+ * A ticket paid for with subscription credits is a PLAY line too, but it was sold on no
+ * package (`playPackageId` is null) and is left out: package performance is about what
+ * packages earned, and the subscription's money is on the line that sold it.
+ */
 export const PLAY_LINES_ONLY = {
-  $match: { 'items.kind': { $nin: [BillItemKind.GROUP, BillItemKind.PRODUCT] } },
+  $match: {
+    'items.kind': { $nin: [BillItemKind.GROUP, BillItemKind.PRODUCT, BillItemKind.SUBSCRIPTION] },
+    'items.playPackageId': { $ne: null },
+  },
 } as const;
 
 /**
@@ -145,3 +157,10 @@ export function minimumAppliedExpr(minimumBillableMinutes: number) {
     ],
   };
 }
+
+/**
+ * True for a play session paid for with subscription credits, as an expression over a
+ * PlaySession document. The `$ifNull` is load-bearing: a session written before
+ * subscriptions has no such key in the raw BSON.
+ */
+export const IS_SUBSCRIPTION_TICKET = { $ne: [{ $ifNull: ['$subscription', null] }, null] } as const;

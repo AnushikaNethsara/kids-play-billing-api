@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { UserModel } from '../../src/modules/users/user.model';
 import { PlayPackageModel } from '../../src/modules/play-packages/playPackage.model';
 import { ProductModel } from '../../src/modules/products/product.model';
+import { SubscriptionPlanModel } from '../../src/modules/subscription-plans/subscriptionPlan.model';
 import { authService } from '../../src/modules/auth/auth.service';
 import { UserRole } from '../../src/common/constants/roles';
 import { SessionPricingMode, type TieredPricing } from '../../src/common/constants/pricingModes';
@@ -51,6 +52,32 @@ export async function createPlayPackage(overrides: Partial<{
     pricingMode: overrides.pricingMode ?? SessionPricingMode.PRORATA,
     graceMinutes: overrides.graceMinutes ?? 0,
     tieredPricing: overrides.tieredPricing ?? null,
+    isActive: overrides.isActive ?? true,
+    description: '',
+    sortOrder: 0,
+    createdBy: null,
+    updatedBy: null,
+  });
+}
+
+export async function createSubscriptionPlan(overrides: Partial<{
+  name: string;
+  price: number;
+  visitCredits: number;
+  visitMinutes: number;
+  graceMinutes: number;
+  extraBlockPrice: number;
+  maxChildren: number | null;
+  isActive: boolean;
+}> = {}) {
+  return SubscriptionPlanModel.create({
+    name: overrides.name ?? 'Monthly 8 visits',
+    price: overrides.price ?? 300_000,
+    visitCredits: overrides.visitCredits ?? 8,
+    visitMinutes: overrides.visitMinutes ?? 60,
+    graceMinutes: overrides.graceMinutes ?? 10,
+    extraBlockPrice: overrides.extraBlockPrice ?? 80_000,
+    maxChildren: overrides.maxChildren ?? null,
     isActive: overrides.isActive ?? true,
     description: '',
     sortOrder: 0,

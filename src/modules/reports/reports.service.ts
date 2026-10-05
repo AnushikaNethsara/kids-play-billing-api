@@ -109,7 +109,7 @@ function billRegisterMatch(query: BillRegisterQuery, range: ResolvedReportRange)
 function childrenOnLine(item: BillItemSubdocument): number {
   const kind = resolveItemKind(item);
   if (kind === BillItemKind.GROUP) return item.quantity;
-  if (kind === BillItemKind.PRODUCT) return 0;
+  if (kind === BillItemKind.PRODUCT || kind === BillItemKind.SUBSCRIPTION) return 0;
   // A checked-out ticket: a family ticket covers several children. Mirrors CHILDREN_ON_BILL.
   if (item.playSessionId) return item.quantity ?? 1;
   return 1;
@@ -133,6 +133,7 @@ function toBillRegisterRow(bill: LeanBill, includeContact: boolean): BillRegiste
     playAmount: amountOf(BillItemKind.PLAY),
     groupAmount: amountOf(BillItemKind.GROUP),
     productAmount: amountOf(BillItemKind.PRODUCT),
+    subscriptionAmount: amountOf(BillItemKind.SUBSCRIPTION),
     subtotal: bill.subtotal,
     discount: bill.discount,
     tax: bill.tax,

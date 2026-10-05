@@ -3,6 +3,7 @@ import { env } from './config/env';
 import { connectDatabase, disconnectDatabase } from './database/connection';
 import { ensureIndexes } from './database/ensureIndexes';
 import { logger } from './common/logger/logger';
+import { subscriptionService } from './modules/subscriptions/subscription.service';
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
@@ -11,6 +12,14 @@ async function main() {
   // Before the first request: an index left over from an earlier schema silently
   // breaks writes that the code itself has no bug in.
   await ensureIndexes();
+  // Finishes any subscription sale a crash left paid but without its subscription.
+  // Best-effort: a failure here is logged and must not keep the till from starting.
+  try {
+    const repaired = await subscriptionService.sweepMissing();
+    if (repaired > 0) logger.warn({ repaired }, 'Created subscriptions missing from paid sales');
+  } catch (err) {
+    logger.error({ err }, 'Subscription sweep failed');
+  }
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

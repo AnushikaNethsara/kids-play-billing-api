@@ -31,7 +31,14 @@ export interface CheckInInput {
   childName?: string;
   /** A family ticket: every child on the same package, checking out together. */
   childNames?: string[];
-  playPackageId: string;
+  /** The package the children play on. Exactly one of this and `subscriptionId` is sent. */
+  playPackageId?: string;
+  /**
+   * Pay with a subscription's credits instead of a package, one credit per child. The
+   * children must be named on the subscription. Never refused for want of credits: see
+   * `PlaySessionSubscriptionPublic.rejectedReason`.
+   */
+  subscriptionId?: string;
   /** ISO timestamp from the device. Defaults to server time when omitted (online check-in). */
   checkInAt?: string;
   customer?: {
@@ -57,6 +64,24 @@ export interface CheckInResult {
   created: boolean;
 }
 
+export interface PlaySessionSubscriptionPublic {
+  subscriptionId: string;
+  code: string;
+  planName: string;
+  visitMinutes: number;
+  graceMinutes: number;
+  extraBlockPrice: number;
+  creditsReserved: number;
+  /** Set at checkout. */
+  creditsUsed: number | null;
+  shortfallBlocks: number | null;
+  /**
+   * Why no credits could be reserved at check-in (no credits left, expired, cancelled, or a
+   * child not named on it). Such a ticket is charged entirely at `extraBlockPrice`.
+   */
+  rejectedReason: string | null;
+}
+
 export interface PlaySessionPublic {
   id: string;
   ticketCode: string;
@@ -67,7 +92,8 @@ export interface PlaySessionPublic {
   childNames: string[];
   /** Children on this ticket. The ticket is charged one child's price times this. */
   childCount: number;
-  playPackageId: string;
+  /** Null on a ticket paid for with a subscription. */
+  playPackageId: string | null;
   packageName: string;
   rateDurationMinutes: number;
   unitPrice: number;
@@ -96,8 +122,25 @@ export interface PlaySessionPublic {
   extrasTotal: number;
   /** True once the bill this session was checked out into was marked as a test bill. */
   isTestBill: boolean;
+  /** Set only on a ticket paid for with subscription credits. */
+  subscription: PlaySessionSubscriptionPublic | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** How a subscription ticket stands so far, in credits rather than money. */
+export interface SessionSubscriptionQuote {
+  /** Credits one child has used so far. */
+  creditsPerChild: number;
+  /** Credits the whole ticket has used so far: `creditsPerChild x childCount`. */
+  creditsNeeded: number;
+  creditsReserved: number;
+  /** The subscription's balance right now, or null if it could not be read. */
+  creditsAvailable: number | null;
+  /** Child-blocks that will be charged in cash if the family leaves now. */
+  shortfallBlocks: number;
+  /** When the ticket next uses another credit per child. */
+  nextCreditAt: Date;
 }
 
 /**
@@ -129,6 +172,11 @@ export interface SessionQuote {
    * Null under PRORATA, where every passing minute already costs something.
    */
   nextChargeAt: Date | null;
+  /**
+   * Set only on a subscription ticket, whose `lineTotal` is just the cash shortfall (usually
+   * 0) and whose `breakdown` describes credits as blocks.
+   */
+  subscription: SessionSubscriptionQuote | null;
 }
 
 export interface PlaySessionWithQuote {

@@ -1,3 +1,4 @@
+import type { SubscriptionPublic } from '../subscriptions/subscription.types';
 export interface CustomerPublic {
   id: string;
   parentName: string;
@@ -106,6 +107,11 @@ export interface CustomerLookup {
     nextVisitNumber: number;
     rewardDue: boolean;
   };
+  /**
+   * The family's subscriptions that have not expired, soonest expiry first - including any
+   * with no credits left, so the cashier can say so rather than wonder.
+   */
+  subscriptions: SubscriptionPublic[];
 }
 
 export interface ListCustomerVisitsQuery {

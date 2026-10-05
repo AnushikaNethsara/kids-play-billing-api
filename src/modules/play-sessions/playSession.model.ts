@@ -33,6 +33,46 @@ export interface PlaySessionExtraSubdocument {
   addedByCashierName: string;
 }
 
+/**
+ * Why a check-in that asked to use a subscription could not reserve credits. The check-in
+ * is still accepted - the child is already playing, and an offline device would otherwise
+ * park the ticket - and the whole stay is charged at the plan's `extraBlockPrice` instead.
+ */
+export const SubscriptionRejectedReason = {
+  INSUFFICIENT_CREDITS: 'INSUFFICIENT_CREDITS',
+  EXPIRED: 'EXPIRED',
+  CANCELLED: 'CANCELLED',
+  CHILD_NOT_ON_SUBSCRIPTION: 'CHILD_NOT_ON_SUBSCRIPTION',
+} as const;
+export type SubscriptionRejectedReason =
+  (typeof SubscriptionRejectedReason)[keyof typeof SubscriptionRejectedReason];
+
+/**
+ * A ticket paid for with subscription credits. Snapshots the subscription's terms at
+ * check-in, like the rate snapshot on every other ticket, plus how many credits this
+ * ticket holds at each stage so a void or a cancelled checkout can give back exactly
+ * what it took.
+ */
+export interface PlaySessionSubscriptionSubdocument {
+  subscriptionId: Types.ObjectId;
+  code: string;
+  planName: string;
+  visitMinutes: number;
+  graceMinutes: number;
+  extraBlockPrice: number;
+  /** Credits taken at check-in, one per child. 0 when the reservation was rejected. */
+  creditsReserved: number;
+  /** Set once a void has given `creditsReserved` back, so it is never given back twice. */
+  reservationReleasedAt: Date | null;
+  /** Further credits taken at checkout. Reset when the checkout is cancelled. */
+  checkoutCredits: number;
+  /** Frozen at checkout: every credit this ticket used, `creditsReserved + checkoutCredits`. */
+  creditsUsed: number | null;
+  /** Frozen at checkout: child-blocks charged in cash because no credit was left. */
+  shortfallBlocks: number | null;
+  rejectedReason: SubscriptionRejectedReason | null;
+}
+
 export interface PlaySessionDocument {
   /**
    * The value encoded in the printed QR ticket. Generated on the cashier's device so a
@@ -63,7 +103,12 @@ export interface PlaySessionDocument {
   // already-playing child is charged - same discipline as BillItemSubdocument. These five
   // fields are the complete input to pricing: a checkout needs nothing else, which is what
   // lets the cashier app quote a session correctly with no network.
-  playPackageId: Types.ObjectId;
+  //
+  // A subscription ticket has no package: `playPackageId` is null and the rate fields
+  // describe the plan's cash fallback (BLOCK_WITH_GRACE at `extraBlockPrice` per
+  // `visitMinutes`), which keeps every older display sensible. It is priced by its
+  // `subscription` snapshot, never by these fields.
+  playPackageId: Types.ObjectId | null;
   packageName: string;
   /**
    * Under PRORATA the rate denominator: `unitPrice` buys this many minutes of play. Under
@@ -114,6 +159,9 @@ export interface PlaySessionDocument {
   /** Products sold onto this visit, billed at checkout. Absent on older sessions. */
   extras: PlaySessionExtraSubdocument[];
 
+  /** Set only on a ticket paid for with subscription credits. Null on every other one. */
+  subscription: PlaySessionSubscriptionSubdocument | null;
+
   /**
    * Mirrors `isTestBill` on the bill this session was checked out into. The session
    * metrics on the dashboard (play hours, occupancy, revenue per play hour) read this
@@ -143,6 +191,28 @@ const playSessionExtraSchema = new Schema<PlaySessionExtraSubdocument>(
   { _id: false },
 );
 
+const playSessionSubscriptionSchema = new Schema<PlaySessionSubscriptionSubdocument>(
+  {
+    subscriptionId: { type: Schema.Types.ObjectId, ref: 'Subscription', required: true },
+    code: { type: String, required: true },
+    planName: { type: String, required: true },
+    visitMinutes: { type: Number, required: true, min: 1 },
+    graceMinutes: { type: Number, default: 0, min: 0 },
+    extraBlockPrice: { type: Number, required: true, min: 0 },
+    creditsReserved: { type: Number, default: 0, min: 0 },
+    reservationReleasedAt: { type: Date, default: null },
+    checkoutCredits: { type: Number, default: 0, min: 0 },
+    creditsUsed: { type: Number, default: null },
+    shortfallBlocks: { type: Number, default: null },
+    rejectedReason: {
+      type: String,
+      enum: Object.values(SubscriptionRejectedReason),
+      default: null,
+    },
+  },
+  { _id: false },
+);
+
 const playSessionSchema = new Schema<PlaySessionDocument>(
   {
     ticketCode: { type: String, required: true, trim: true },
@@ -155,7 +225,15 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     childNames: { type: [String], default: [] },
     childCount: { type: Number, default: 1, min: 1 },
 
-    playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', required: true },
+    playPackageId: {
+      type: Schema.Types.ObjectId,
+      ref: 'PlayPackage',
+      default: null,
+      // Every ticket is on a package except one paid for with a subscription.
+      required(this: PlaySessionDocument) {
+        return !this.subscription;
+      },
+    },
     packageName: { type: String, required: true },
     rateDurationMinutes: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
@@ -189,6 +267,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
 
     extras: { type: [playSessionExtraSchema], default: [] },
 
+    subscription: { type: playSessionSubscriptionSchema, default: null },
+
     isTestBill: { type: Boolean, default: false },
   },
   { timestamps: true },
@@ -205,6 +285,8 @@ playSessionSchema.index({ phoneNumber: 1, checkInAt: -1 });
 playSessionSchema.index({ checkInAt: -1 });
 // Reopening sessions when their bill is cancelled.
 playSessionSchema.index({ billId: 1 });
+// A subscription's visits, for its detail page.
+playSessionSchema.index({ 'subscription.subscriptionId': 1, checkInAt: -1 });
 
 /**
  * The session's rate snapshot, read defensively, in the shape `priceSession` expects.

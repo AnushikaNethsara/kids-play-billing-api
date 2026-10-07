@@ -39,6 +39,11 @@ export interface BusinessSettingsDocument {
   logoRasterHeightDots: number;
   /** Gate on whether the logo actually prints - a business can upload one ahead of time. */
   showLogoOnReceipt: boolean;
+  /**
+   * Every Nth visit earns the family a loyalty reward, flagged to the cashier at check-in
+   * and checkout. 0 turns the flag off. Only a flag: the cashier applies any discount.
+   */
+  loyaltyVisitInterval: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -75,6 +80,7 @@ const businessSettingsSchema = new Schema<BusinessSettingsDocument>(
     logoRasterWidthDots: { type: Number, default: 0 },
     logoRasterHeightDots: { type: Number, default: 0 },
     showLogoOnReceipt: { type: Boolean, default: false },
+    loyaltyVisitInterval: { type: Number, default: 0, min: 0, max: 100 },
   },
   { timestamps: true },
 );
@@ -95,6 +101,14 @@ export function resolveMaximumSessionHours(settings: Pick<BusinessSettingsDocume
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? value
     : DEFAULT_MAXIMUM_SESSION_HOURS;
+}
+
+/** 0 (off) for documents saved before loyalty existed. */
+export function resolveLoyaltyVisitInterval(
+  settings: Partial<Pick<BusinessSettingsDocument, 'loyaltyVisitInterval'>>,
+): number {
+  const value = settings.loyaltyVisitInterval;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 0;
 }
 
 export const BusinessSettingsModel = model<BusinessSettingsDocument>(

@@ -1,5 +1,9 @@
 import { settingsRepository } from './settings.repository';
-import { resolveMaximumSessionHours, resolveMinimumBillableMinutes } from './settings.model';
+import {
+  resolveLoyaltyVisitInterval,
+  resolveMaximumSessionHours,
+  resolveMinimumBillableMinutes,
+} from './settings.model';
 import type { UpdateSettingsInput, BusinessSettingsPublic } from './settings.types';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
@@ -27,6 +31,7 @@ function toPublic(settings: Awaited<ReturnType<typeof settingsRepository.getOrCr
     logoRasterWidthDots: settings.logoRasterWidthDots ?? 0,
     logoRasterHeightDots: settings.logoRasterHeightDots ?? 0,
     showLogoOnReceipt: settings.showLogoOnReceipt ?? false,
+    loyaltyVisitInterval: resolveLoyaltyVisitInterval(settings),
     updatedAt: settings.updatedAt,
   };
 }

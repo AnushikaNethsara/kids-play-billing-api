@@ -35,3 +35,80 @@ export interface CustomerChild {
   childName: string;
   lastCheckInAt: Date;
 }
+
+/** One child of a family, across every ticket and bill they appeared on. */
+export interface CustomerProfileChild {
+  name: string;
+  /** Distinct business days this child played. */
+  visits: number;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  /** Billed minutes of play, summed. A child still playing contributes nothing yet. */
+  totalPlayMinutes: number;
+  /** The package this child played on most often. */
+  favouritePackage: string | null;
+}
+
+export interface CustomerFrequency {
+  totalVisits: number;
+  visitsThisWeek: number;
+  visitsThisMonth: number;
+  visitsLast90Days: number;
+  /** Mean gap between consecutive visits, in days. Null below two visits. */
+  averageDaysBetweenVisits: number | null;
+  firstVisitAt: Date | null;
+  lastVisitAt: Date | null;
+}
+
+export interface CustomerProfile {
+  customerId: string;
+  children: CustomerProfileChild[];
+  frequency: CustomerFrequency;
+  /** One entry per visit day in the last 365 days, oldest first. */
+  heatmap: { day: string; children: number }[];
+}
+
+/** One visit day of a family, as the visit timeline shows it. */
+export interface CustomerVisitRow {
+  /** The business day, `YYYY-MM-DD`. */
+  date: string;
+  timeIn: Date | null;
+  timeOut: Date | null;
+  children: string[];
+  groups: string[];
+  packages: string[];
+  /** Socks and the like on that day's bills. */
+  extrasTotal: number;
+  /** What the day's bills came to. */
+  amount: number;
+  refunded: boolean;
+  bills: { id: string; billNumber: string | null }[];
+}
+
+/**
+ * What the till shows once a typed phone number matches a family: how often they come,
+ * who usually plays, and whether this visit earns the loyalty reward.
+ */
+export interface CustomerLookup {
+  customerId: string;
+  parentName: string;
+  phoneNumber: string;
+  visitCount: number;
+  /** A visit is already on record for today - a second check-in today is the same visit. */
+  visitedToday: boolean;
+  lastVisitAt: Date | null;
+  /** Up to four children, those who came most often first. */
+  usualChildren: string[];
+  loyalty: {
+    /** Every Nth visit earns a reward; 0 when loyalty is off. */
+    interval: number;
+    /** Which visit today is for this family. */
+    nextVisitNumber: number;
+    rewardDue: boolean;
+  };
+}
+
+export interface ListCustomerVisitsQuery {
+  page: number;
+  limit: number;
+}

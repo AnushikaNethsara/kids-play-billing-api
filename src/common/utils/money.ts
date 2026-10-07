@@ -33,3 +33,16 @@ export function calculatePercentage(baseAmount: number, percentage: number): num
 export function sumMinorUnits(amounts: number[]): number {
   return amounts.reduce((sum, amount) => sum + amount, 0);
 }
+
+/**
+ * Minor units as a plain decimal string for machine-readable output (CSV): `80000` ->
+ * `"800.00"`, `-5` -> `"-0.05"`. Integer arithmetic only, and no thousands separators -
+ * `formatMoney`'s locale commas would split a CSV cell in two.
+ */
+export function formatMinorAsDecimal(minorAmount: number): string {
+  const sign = minorAmount < 0 ? '-' : '';
+  const absolute = Math.abs(Math.trunc(minorAmount));
+  const major = Math.floor(absolute / MINOR_UNITS_PER_MAJOR);
+  const minor = absolute % MINOR_UNITS_PER_MAJOR;
+  return `${sign}${major}.${String(minor).padStart(2, '0')}`;
+}

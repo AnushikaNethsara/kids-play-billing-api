@@ -35,6 +35,22 @@ export interface DashboardSummary {
   otherPayments: MoneyBreakdown;
   bestSellingPackage: { playPackageId: string; packageName: string; quantitySold: number; revenue: number } | null;
   topCashier: { cashierId: string; cashierName: string; revenue: number; billCount: number } | null;
+  /**
+   * Line totals by kind of line, before bill-level discount and tax - what play, group
+   * visits and counter sales each brought in. Sums to `grossRevenue`.
+   */
+  revenueByKind: { play: number; group: number; product: number };
+  /** Group lines in the period, and the children they brought between them. */
+  groupVisits: { count: number; headcount: number };
+  /** Units sold across every product. */
+  productUnitsSold: number;
+}
+
+export interface ProductPerformance {
+  productId: string;
+  productName: string;
+  quantitySold: number;
+  revenue: number;
 }
 
 /**
@@ -42,9 +58,13 @@ export interface DashboardSummary {
  * count: an ACTIVE one has no duration yet, and a VOIDED one never represented real play.
  */
 export interface SessionSummary {
-  /** Sessions closed in the period. */
+  /** Tickets closed in the period. A family ticket is one. */
   sessionCount: number;
+  /** Children on those tickets - a family ticket counts each child. */
+  childCount: number;
+  /** Child-minutes of play: a family of three for an hour is 180. */
   totalPlayMinutes: number;
+  /** Per child. */
   averagePlayMinutes: number;
   longestPlayMinutes: number;
   /** How often the configured minimum had to be applied - is the minimum set right? */

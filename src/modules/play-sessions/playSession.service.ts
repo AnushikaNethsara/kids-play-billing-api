@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { playSessionRepository } from './playSession.repository';
 import { playPackageRepository } from '../play-packages/playPackage.repository';
 import { resolveGraceMinutes, resolvePricingMode } from '../play-packages/playPackage.model';
+import { resolveTieredPricing } from '../play-packages/tieredPricing.schema';
 import { settingsService } from '../settings/settings.service';
 import {
   resolveMaximumSessionHours,
@@ -15,8 +16,19 @@ import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { UserRole } from '../../common/constants/roles';
 import { AuthorizationError, InvalidStateError, NotFoundError, ValidationError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
-import { resolveSessionRate, type PlaySessionHydrated } from './playSession.model';
+import {
+  resolveChildCount,
+  resolveChildNames,
+  resolveSessionRate,
+  sumSessionExtras,
+  type PlaySessionExtraSubdocument,
+  type PlaySessionHydrated,
+} from './playSession.model';
+import { productRepository } from '../products/product.repository';
+import { InvalidProductError } from '../bills/bill.errors';
 import type {
+  AddSessionExtrasInput,
+  SessionExtraInput,
   CheckInInput,
   CheckInResult,
   ListPlaySessionsQuery,
@@ -41,12 +53,15 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     ticketCode: session.ticketCode,
     status: session.status,
     childName: session.childName,
+    childNames: resolveChildNames(session),
+    childCount: resolveChildCount(session),
     playPackageId: session.playPackageId.toString(),
     packageName: session.packageName,
     rateDurationMinutes: session.rateDurationMinutes,
     unitPrice: session.unitPrice,
     pricingMode: resolveSessionRate(session).pricingMode,
     graceMinutes: resolveSessionRate(session).graceMinutes,
+    tieredPricing: resolveSessionRate(session).tieredPricing,
     customerId: session.customerId ? session.customerId.toString() : null,
     parentName: session.parentName,
     phoneNumber: session.phoneNumber,
@@ -61,6 +76,17 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     checkOutCashierName: session.checkOutCashierName,
     voidedAt: session.voidedAt,
     voidReason: session.voidReason,
+    extras: (session.extras ?? []).map((extra) => ({
+      localId: extra.localId,
+      productId: extra.productId.toString(),
+      productName: extra.productName,
+      unitPrice: extra.unitPrice,
+      quantity: extra.quantity,
+      lineTotal: extra.unitPrice * extra.quantity,
+      addedAt: extra.addedAt,
+      addedByCashierName: extra.addedByCashierName,
+    })),
+    extrasTotal: sumSessionExtras(session),
     isTestBill: session.isTestBill ?? false,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
@@ -70,12 +96,16 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
 /**
  * Prices a session as of `asOf`. Shared by the live quote shown on the cashier's screen
  * and by the authoritative calculation inside checkout, so the two can never drift apart.
+ *
+ * A family ticket is priced as one child and multiplied out, so it always costs exactly
+ * what the same children on separate tickets would - rounding included.
  */
 export function quoteSession(
   session: Pick<
     PlaySessionHydrated,
-    'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes'
-  >,
+    'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes' | 'tieredPricing'
+  > &
+    Partial<Pick<PlaySessionHydrated, 'childCount'>>,
   asOf: Date,
   settings: { minimumBillableMinutes: number; maximumSessionHours: number },
 ): SessionQuote {
@@ -93,28 +123,81 @@ export function quoteSession(
       ? null
       : new Date(asOf.getTime() + breakdown.minutesUntilNextCharge * MILLISECONDS_PER_MINUTE);
 
+  const childCount = resolveChildCount(session);
+
   return {
     asOf,
     elapsedMinutes,
     billedMinutes,
     minimumApplied,
-    lineTotal: breakdown.lineTotal,
+    lineTotal: breakdown.lineTotal * childCount,
+    perChildLineTotal: breakdown.lineTotal,
+    childCount,
     exceedsMaximumSession: elapsedMinutes > settings.maximumSessionHours * MINUTES_PER_HOUR,
     breakdown,
     nextChargeAt,
   };
 }
 
+/**
+ * Snapshots each requested extra from its product's current name and price. Done before
+ * anything is written, so one unknown or inactive product fails the whole request rather
+ * than leaving half the extras on the session.
+ */
+async function snapshotExtras(
+  inputs: SessionExtraInput[],
+  actor: AuthenticatedUser,
+  addedAt: Date,
+): Promise<PlaySessionExtraSubdocument[]> {
+  const extras: PlaySessionExtraSubdocument[] = [];
+  const seen = new Set<string>();
+
+  for (const input of inputs) {
+    // Two entries with one localId in the same request are one sale, not two.
+    if (seen.has(input.localId)) continue;
+    seen.add(input.localId);
+
+    const product = await productRepository.findById(input.productId);
+    if (!product) throw new InvalidProductError('The selected product does not exist');
+    if (!product.isActive) throw new InvalidProductError(`${product.name} is not currently available`);
+
+    extras.push({
+      localId: input.localId,
+      productId: product._id,
+      productName: product.name,
+      unitPrice: product.price,
+      quantity: input.quantity,
+      addedAt,
+      // Taken from the authenticated session, never the client, like every cashier field.
+      addedByCashierId: new Types.ObjectId(actor.id),
+      addedByCashierName: actor.name,
+    });
+  }
+
+  return extras;
+}
+
 export const playSessionService = {
   /**
-   * Checking a child in. Retry-safe by construction: the unique index on `ticketCode`
+   * Checking a child - or a family of children on one ticket - in. Retry-safe by construction: the unique index on `ticketCode`
    * means a sync that retries after an ambiguous network failure gets the session it
    * already created back, rather than checking the same child in twice. This is why no
    * Idempotency-Key header is needed here, unlike bill completion.
    */
   async checkIn(input: CheckInInput, actor: AuthenticatedUser): Promise<CheckInResult> {
     const existing = await playSessionRepository.findByTicketCode(input.ticketCode);
-    if (existing) return { session: toPublicSession(existing), created: false };
+    if (existing) {
+      // A replay may carry extras added on the device after the first attempt went out.
+      // They are merged by localId, so the ones the first attempt already saved are not
+      // sold twice.
+      const known = new Set((existing.extras ?? []).map((extra) => extra.localId));
+      const pending = (input.extras ?? []).filter((extra) => !known.has(extra.localId));
+      if (pending.length > 0 && existing.status === PlaySessionStatus.ACTIVE) {
+        const session = await this.addExtras(input.ticketCode, { extras: pending }, actor);
+        return { session, created: false };
+      }
+      return { session: toPublicSession(existing), created: false };
+    }
 
     const settings = await settingsService.getRaw();
     const pkg = await playPackageRepository.findById(input.playPackageId);
@@ -127,6 +210,7 @@ export const playSessionService = {
 
     const now = new Date();
     const checkInAt = this.resolveCheckInAt(input.checkInAt, now, resolveMaximumSessionHours(settings));
+    const extras = await snapshotExtras(input.extras ?? [], actor, checkInAt);
 
     // Read through the same resolver the session uses, so the snapshot is already
     // normalised (grace 0 under PRORATA) rather than a raw copy of the package.
@@ -135,13 +219,19 @@ export const playSessionService = {
       rateDurationMinutes: pkg.durationMinutes,
       pricingMode: resolvePricingMode(pkg),
       graceMinutes: resolveGraceMinutes(pkg),
+      tieredPricing: resolveTieredPricing(pkg),
     });
+
+    // Validation guarantees exactly one of the two is present.
+    const childNames = input.childNames ?? [input.childName as string];
 
     try {
       const session = await playSessionRepository.create({
         ticketCode: input.ticketCode,
         status: PlaySessionStatus.ACTIVE,
-        childName: input.childName,
+        childName: childNames.join(', '),
+        childNames,
+        childCount: childNames.length,
         playPackageId: pkg._id,
         packageName: pkg.name,
         rateDurationMinutes: pkg.durationMinutes,
@@ -151,6 +241,8 @@ export const playSessionService = {
         // mode back does not lose it, but a PRORATA session carries 0, so even a client
         // that forgets to check the mode cannot misprice from this snapshot.
         graceMinutes: packageRate.graceMinutes,
+        // The whole tier table, so a later edit to the package never reprices this child.
+        tieredPricing: packageRate.tieredPricing,
         customerId: input.customer?.customerId ? new Types.ObjectId(input.customer.customerId) : null,
         parentName: input.customer?.parentName ?? '',
         phoneNumber: input.customer?.phoneNumber ?? '',
@@ -159,6 +251,7 @@ export const playSessionService = {
         // The cashier is always taken from the authenticated session, never the client.
         checkInCashierId: new Types.ObjectId(actor.id),
         checkInCashierName: actor.name,
+        extras,
       });
 
       return { session: toPublicSession(session), created: true };
@@ -253,6 +346,103 @@ export const playSessionService = {
       })),
       meta: buildPaginationMeta({ page: query.page, limit: query.limit }, total),
     };
+  },
+
+  /**
+   * Sells products onto a child who is still playing; they are charged at checkout.
+   * Idempotent per extra `localId`, so the device can retry a sync blindly. An extra for a
+   * session that has already been checked out is refused rather than silently dropped:
+   * the family has paid and gone, and the sale has to be rung up as a bill of its own.
+   */
+  async addExtras(
+    ticketCode: string,
+    input: AddSessionExtrasInput,
+    actor: AuthenticatedUser,
+  ): Promise<PlaySessionPublic> {
+    const session = await playSessionRepository.findByTicketCode(ticketCode);
+    if (!session) throw new NotFoundError('No ticket found for this code');
+
+    const known = new Set((session.extras ?? []).map((extra) => extra.localId));
+    const pending = input.extras.filter((extra) => !known.has(extra.localId));
+    if (pending.length === 0) return toPublicSession(session);
+
+    if (session.status !== PlaySessionStatus.ACTIVE) {
+      throw new InvalidStateError(
+        'This child has already been checked out - sell the items on a separate bill',
+      );
+    }
+
+    let latest: PlaySessionHydrated = session;
+    for (const extra of await snapshotExtras(pending, actor, new Date())) {
+      const updated = await playSessionRepository.addExtraIfActive(ticketCode, extra);
+      if (updated) {
+        latest = updated;
+        continue;
+      }
+
+      // Lost a race: either a concurrent retry already added this one, which is fine, or
+      // the child was checked out in between, which is not.
+      const current = await playSessionRepository.findByTicketCode(ticketCode);
+      if (!current) throw new NotFoundError('No ticket found for this code');
+      if (!(current.extras ?? []).some((saved) => saved.localId === extra.localId)) {
+        throw new InvalidStateError(
+          'This child has already been checked out - sell the items on a separate bill',
+        );
+      }
+      latest = current;
+    }
+
+    return toPublicSession(latest);
+  },
+
+  /**
+   * Takes back an extra added by mistake, before checkout. Always audited: removing a sale
+   * the family will never be charged for is exactly what an audit trail is for.
+   */
+  async removeExtra(
+    ticketCode: string,
+    localId: string,
+    reason: string | undefined,
+    actor: AuthenticatedUser,
+  ): Promise<PlaySessionPublic> {
+    const session = await playSessionRepository.findByTicketCode(ticketCode);
+    if (!session) throw new NotFoundError('No ticket found for this code');
+
+    const extra = (session.extras ?? []).find((saved) => saved.localId === localId);
+    // Already gone: a retried removal is a no-op.
+    if (!extra) return toPublicSession(session);
+
+    if (session.status !== PlaySessionStatus.ACTIVE) {
+      throw new InvalidStateError('Items on a checked-out ticket are on its bill and cannot be removed');
+    }
+
+    const updated = await playSessionRepository.removeExtraIfActive(ticketCode, localId);
+    if (!updated) {
+      const current = await playSessionRepository.findByTicketCode(ticketCode);
+      if (current && !(current.extras ?? []).some((saved) => saved.localId === localId)) {
+        return toPublicSession(current);
+      }
+      throw new InvalidStateError('Items on a checked-out ticket are on its bill and cannot be removed');
+    }
+
+    await auditLogService.record({
+      userId: actor.id,
+      userName: actor.name,
+      action: AuditAction.SESSION_EXTRA_REMOVED,
+      entityType: AuditEntityType.PLAY_SESSION,
+      entityId: updated.id,
+      metadata: {
+        ticketCode,
+        childName: updated.childName,
+        productName: extra.productName,
+        quantity: extra.quantity,
+        lineTotal: extra.unitPrice * extra.quantity,
+        addedByCashierName: extra.addedByCashierName,
+        reason: reason ?? null,
+      },
+    });
+
+    return toPublicSession(updated);
   },
 
   /**

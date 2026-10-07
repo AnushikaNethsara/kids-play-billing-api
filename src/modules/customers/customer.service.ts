@@ -8,8 +8,16 @@ import type {
   CustomerPublic,
   CustomerChild,
 } from './customer.types';
-import { NotFoundError } from '../../common/errors';
+import { DuplicateResourceError, NotFoundError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
+import { BillModel } from '../bills/bill.model';
+import { settingsService } from '../settings/settings.service';
+import {
+  SPEND_BILL_MATCH,
+  VISIT_BILL_MATCH,
+  customerBillsMatch,
+  visitDayExpr,
+} from './customerVisits';
 
 function toPublic(customer: CustomerHydrated): CustomerPublic {
   return {
@@ -59,11 +67,25 @@ export const customerService = {
     const customer = await customerRepository.findById(id);
     if (!customer) throw new NotFoundError('Customer not found');
 
+    const phoneChanged = input.phoneNumber !== undefined && input.phoneNumber !== customer.phoneNumber;
     if (input.parentName !== undefined) customer.parentName = input.parentName;
     if (input.phoneNumber !== undefined) customer.phoneNumber = input.phoneNumber;
     if (input.email !== undefined) customer.email = input.email;
     if (input.notes !== undefined) customer.notes = input.notes;
-    await customer.save();
+    try {
+      await customer.save();
+    } catch (err) {
+      if ((err as { code?: number }).code === 11000) {
+        throw new DuplicateResourceError('Another customer already has this phone number');
+      }
+      throw err;
+    }
+
+    // The number is the family's identity: a new one brings a different set of bills.
+    if (phoneChanged) {
+      await this.recomputeStats(customer.id);
+      return toPublic((await customerRepository.findById(customer.id)) ?? customer);
+    }
 
     return toPublic(customer);
   },
@@ -79,70 +101,87 @@ export const customerService = {
   },
 
   /**
-   * Called when a bill referencing this customer is completed - not exposed as a
-   * standalone endpoint. Looks up-or-creates the customer by phone number so repeat
-   * visits accumulate onto the same record.
+   * The customer a paid bill belongs to, created on first sight of its phone number so a
+   * family's visits accumulate on one record. Not an endpoint: called when a bill is
+   * paid. Returns null for an anonymous walk-in - no id and no number.
+   *
+   * An upsert on the normalised number, so two tills paying the same family's first two
+   * bills at once cannot create two customers: the unique index turns the loser's insert
+   * into E11000, and it reads back the winner's record instead.
    */
-  async recordVisit(
-    customerRef: { id?: string; parentName?: string; phoneNumber?: string },
-    amountSpent: number,
-    visitDate: Date,
-  ): Promise<string | null> {
-    let customer: CustomerHydrated | null = null;
-
+  async ensureCustomer(customerRef: {
+    id?: string;
+    parentName?: string;
+    phoneNumber?: string;
+  }): Promise<string | null> {
     if (customerRef.id) {
-      customer = await customerRepository.findById(customerRef.id);
-    } else if (customerRef.phoneNumber) {
-      customer = await customerRepository.findByPhoneNumber(customerRef.phoneNumber);
-      if (!customer) {
-        customer = await customerRepository.create({
-          parentName: customerRef.parentName ?? '',
-          phoneNumber: customerRef.phoneNumber,
-          email: '',
-          notes: '',
-        });
-      }
+      const existing = await customerRepository.findById(customerRef.id);
+      if (existing) return existing.id;
     }
+    if (!customerRef.phoneNumber) return null;
 
+    let customer: CustomerHydrated | null;
+    try {
+      customer = await customerRepository.upsertByPhoneNumber(customerRef.phoneNumber);
+    } catch (err) {
+      if ((err as { code?: number }).code !== 11000) throw err;
+      customer = await customerRepository.findByPhoneNumber(customerRef.phoneNumber);
+    }
     if (!customer) return null;
 
-    customer.visitCount += 1;
-    customer.totalSpent += amountSpent;
-    customer.lastVisitAt = visitDate;
-    if (customerRef.parentName && !customer.parentName) customer.parentName = customerRef.parentName;
-    await customer.save();
-
+    if (customerRef.parentName && !customer.parentName) {
+      customer.parentName = customerRef.parentName;
+      await customer.save();
+    }
     return customer.id;
   },
 
   /**
-   * Corrects a visit that recordVisit already counted - currently only used when a bill
-   * is marked as, or unmarked from, a test bill. A test bill must not leave the parent
-   * with a visit and a lifetime spend the business never actually took.
+   * Rebuilds a customer's visit count, lifetime spend and last visit from their bills.
    *
-   * Resolves the customer exactly as recordVisit did, but never creates one: there is
-   * nothing to correct on a record that does not exist. `lastVisitAt` is deliberately
-   * left alone - the previous visit date is not recoverable from here, and a slightly
-   * late "last seen" is a far smaller lie than a wrong lifetime spend.
+   * These used to be counters bumped on every payment, and they drifted: a pair of socks
+   * counted as a visit, two bills on one day counted as two, and cancelling a paid bill
+   * never took its visit back off. Derived instead - always from the one visit definition
+   * in `customerVisits.ts` - so any change to a bill can simply recompute, and running it
+   * twice changes nothing.
    */
-  async adjustVisitStats(
-    customerRef: { id?: string; phoneNumber?: string },
-    delta: { visitCount: number; totalSpent: number },
-  ): Promise<void> {
-    let customer: CustomerHydrated | null = null;
-
-    if (customerRef.id) {
-      customer = await customerRepository.findById(customerRef.id);
-    } else if (customerRef.phoneNumber) {
-      customer = await customerRepository.findByPhoneNumber(customerRef.phoneNumber);
-    }
-
+  async recomputeStats(customerId: string): Promise<void> {
+    const customer = await customerRepository.findById(customerId);
     if (!customer) return;
 
-    // Clamped at zero: records get edited and merged between the visit and the
-    // correction, and a negative visit count or lifetime spend is worse than a low one.
-    customer.visitCount = Math.max(0, customer.visitCount + delta.visitCount);
-    customer.totalSpent = Math.max(0, customer.totalSpent + delta.totalSpent);
-    await customer.save();
+    const { timezone } = await settingsService.getRaw();
+    const identity = customerBillsMatch(customer);
+
+    const [visits] = await BillModel.aggregate<{ visitCount: number; lastVisitAt: Date | null }>([
+      { $match: { $and: [identity, VISIT_BILL_MATCH] } },
+      { $group: { _id: visitDayExpr(timezone), lastPaidAt: { $max: '$paidAt' } } },
+      { $group: { _id: null, visitCount: { $sum: 1 }, lastVisitAt: { $max: '$lastPaidAt' } } },
+    ]);
+    const [spend] = await BillModel.aggregate<{ totalSpent: number }>([
+      { $match: { $and: [identity, SPEND_BILL_MATCH] } },
+      { $group: { _id: null, totalSpent: { $sum: '$grandTotal' } } },
+    ]);
+
+    await customerRepository.setStats(customer.id, {
+      visitCount: visits?.visitCount ?? 0,
+      lastVisitAt: visits?.lastVisitAt ?? null,
+      totalSpent: spend?.totalSpent ?? 0,
+    });
+  },
+
+  /**
+   * Recomputes the customer a bill belongs to, after the bill changed in a way that moves
+   * a visit or a spend - cancelled, refunded, or (un)marked as a test. Never creates a
+   * customer: a bill that never reached one has nothing to correct.
+   */
+  async recomputeStatsForBill(bill: {
+    customerId?: { toString(): string } | null;
+    phoneNumber?: string | null;
+  }): Promise<void> {
+    let customerId = bill.customerId ? bill.customerId.toString() : null;
+    if (!customerId && bill.phoneNumber) {
+      customerId = (await customerRepository.findByPhoneNumber(bill.phoneNumber))?.id ?? null;
+    }
+    if (customerId) await this.recomputeStats(customerId);
   },
 };

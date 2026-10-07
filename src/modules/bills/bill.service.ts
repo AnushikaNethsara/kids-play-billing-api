@@ -6,13 +6,19 @@ import { customerService } from '../customers/customer.service';
 import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { playSessionRepository } from '../play-sessions/playSession.repository';
-import { resolveSessionRate } from '../play-sessions/playSession.model';
+import { productRepository } from '../products/product.repository';
+import { resolveChildCount, resolveChildNames, resolveSessionRate } from '../play-sessions/playSession.model';
 import type { PlaySessionHydrated } from '../play-sessions/playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
+import {
+  BillItemKind,
+  GROUP_RATE_MINUTES,
+  resolveItemKind,
+} from '../../common/constants/billItemKind';
 import { UserRole } from '../../common/constants/roles';
 import {
   AuthorizationError,
@@ -21,10 +27,12 @@ import {
   PaymentError,
   ValidationError,
 } from '../../common/errors';
-import { InvalidPlayPackageError } from './bill.errors';
+import { InvalidPlayPackageError, InvalidProductError } from './bill.errors';
 import {
   calculateBillTotals,
+  checkoutTimeOf,
   isDiscountAboveThreshold,
+  priceGroupVisit,
   priceSession,
   priceSessionForPeriod,
   validateDiscountPermission,
@@ -34,6 +42,10 @@ import type {
   BillPublic,
   BillItemPublic,
   CreateBillInput,
+  CreateBillItemInput,
+  CreateGroupItemInput,
+  CreatePlayItemInput,
+  CreateProductItemInput,
   CreateBillFromSessionsInput,
   UpdateBillInput,
   CompleteBillInput,
@@ -45,47 +57,62 @@ import type {
 import type { AuthenticatedUser } from '../../common/types/express';
 import { buildPaginationMeta } from '../../common/utils/pagination';
 
+const MONGO_DUPLICATE_KEY_ERROR_CODE = 11000;
+
+function isDuplicateBillNumberError(error: unknown): boolean {
+  const mongoError = error as { code?: number; keyPattern?: Record<string, unknown> };
+  return mongoError?.code === MONGO_DUPLICATE_KEY_ERROR_CODE && !!mongoError.keyPattern?.billNumber;
+}
+
 function toPublicItem(item: BillItemSubdocument): BillItemPublic {
-  const pricingMode =
-    item.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
-      ? SessionPricingMode.BLOCK_WITH_GRACE
-      : SessionPricingMode.PRORATA;
+  // The item's own snapshot, read through the session resolver so an item with a missing
+  // or unknown mode reads as PRORATA, and a TIERED_HOURLY item always has its rates.
+  const rate = resolveSessionRate({
+    unitPrice: item.unitPrice,
+    rateDurationMinutes: item.durationMinutes,
+    pricingMode: item.pricingMode,
+    graceMinutes: item.graceMinutes,
+    tieredPricing: item.tieredPricing,
+  });
+  const { pricingMode } = rate;
 
   // Reproduced here rather than stored, from inputs that were all snapshotted at billing
   // time, so it is deterministic. Deriving at the boundary means no client ever works out
-  // a block split for itself, and `lineTotal` remains the one authority on the money.
+  // a block or tier split for itself, and `lineTotal` remains the one authority on the money.
   const breakdown =
-    pricingMode === SessionPricingMode.BLOCK_WITH_GRACE && item.billedMinutes !== null
-      ? priceSession(
-          {
-            pricingMode,
-            unitPrice: item.unitPrice,
-            rateDurationMinutes: item.durationMinutes,
-            graceMinutes: item.graceMinutes ?? 0,
-          },
-          item.billedMinutes,
-        )
+    pricingMode !== SessionPricingMode.PRORATA && item.billedMinutes !== null
+      ? priceSession(rate, item.billedMinutes)
       : null;
 
   return {
-    childName: item.childName,
-    playPackageId: item.playPackageId.toString(),
+    kind: resolveItemKind(item),
+    childName: item.childName ?? '',
+    playPackageId: item.playPackageId ? item.playPackageId.toString() : null,
     packageName: item.packageName,
     durationMinutes: item.durationMinutes,
     unitPrice: item.unitPrice,
     quantity: item.quantity,
     lineTotal: item.lineTotal,
+    productId: item.productId ? item.productId.toString() : null,
+    visitAt: item.visitAt ?? null,
+    visitMinutes: item.visitMinutes ?? null,
     playSessionId: item.playSessionId ? item.playSessionId.toString() : null,
     checkInAt: item.checkInAt ?? null,
     checkOutAt: item.checkOutAt ?? null,
     billedMinutes: item.billedMinutes ?? null,
     pricingMode,
     graceMinutes: item.graceMinutes ?? 0,
+    tieredPricing: rate.tieredPricing,
     blocksCharged: breakdown?.blocksCharged ?? null,
     blockSubtotal: breakdown?.blockSubtotal ?? null,
     overageMinutes: breakdown?.overageMinutes ?? null,
     overageAmount: breakdown?.overageAmount ?? null,
     graceApplied: breakdown?.graceApplied ?? null,
+    hourLines: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.hourLines ?? null) : null,
+    overtime: breakdown?.overtime ?? null,
+    rawTotal: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.rawTotal ?? null) : null,
+    roundingAdjustment:
+      pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.roundingAdjustment ?? null) : null,
   };
 }
 
@@ -117,6 +144,9 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     refundedAt: bill.refundedAt,
     refundedBy: bill.refundedBy ? bill.refundedBy.toString() : null,
     refundReason: bill.refundReason,
+    paymentRecordedAt: bill.paymentRecordedAt ?? null,
+    paymentRecordedBy: bill.paymentRecordedBy ? bill.paymentRecordedBy.toString() : null,
+    paymentRecordedByName: bill.paymentRecordedByName ?? null,
     // Bills predating the flag have no such field, so this normalises to false rather
     // than leaking undefined out through the API.
     isTestBill: bill.isTestBill ?? false,
@@ -126,51 +156,6 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     createdAt: bill.createdAt,
     updatedAt: bill.updatedAt,
   };
-}
-
-async function buildItemSnapshots(items: CreateBillInput['items']): Promise<BillItemSubdocument[]> {
-  if (!items || items.length === 0) {
-    throw new ValidationError('At least one bill item is required');
-  }
-
-  const snapshots: BillItemSubdocument[] = [];
-
-  for (const item of items) {
-    const pkg = await playPackageRepository.findById(item.playPackageId);
-    if (!pkg) {
-      throw new InvalidPlayPackageError('The selected play package does not exist');
-    }
-    if (!pkg.isActive) {
-      throw new InvalidPlayPackageError('The selected play package is not currently available');
-    }
-
-    const quantity = item.quantity ?? 1;
-    if (quantity < 1) {
-      throw new ValidationError('Quantity must be at least 1');
-    }
-
-    snapshots.push({
-      childName: item.childName,
-      playPackageId: pkg._id,
-      packageName: pkg.name,
-      durationMinutes: pkg.durationMinutes,
-      unitPrice: pkg.price,
-      quantity,
-      lineTotal: pkg.price * quantity,
-      // Flat-price path: no session backs these items.
-      playSessionId: null,
-      checkInAt: null,
-      checkOutAt: null,
-      billedMinutes: null,
-      // Hard-coded rather than read off the package. A flat line is unitPrice x quantity
-      // and has no elapsed time to price, so if an admin has since switched this package
-      // to block pricing, that must not follow the line here.
-      pricingMode: SessionPricingMode.PRORATA,
-      graceMinutes: 0,
-    } as BillItemSubdocument);
-  }
-
-  return snapshots;
 }
 
 /**
@@ -199,6 +184,200 @@ function resolveCheckOutAt(supplied: string | undefined, now: Date): Date {
   return checkOutAt;
 }
 
+/** The fields every non-session line leaves empty, spelled out once. */
+const NO_SESSION = {
+  playSessionId: null,
+  checkInAt: null,
+  checkOutAt: null,
+  billedMinutes: null,
+  // Hard-coded rather than read off anything. A line that is not a timed session has no
+  // elapsed time to price, so no block or tier rule can ever apply to it.
+  pricingMode: SessionPricingMode.PRORATA,
+  graceMinutes: 0,
+  tieredPricing: null,
+} as const;
+
+/**
+ * How old a cashier's group visit time may be. A cashier rings a group up at the till, so
+ * the visit is today; the slack is for a device that took the bill offline and synced it
+ * later. Anything older is an admin back-entering a visit, which only an admin may do.
+ */
+const CASHIER_GROUP_VISIT_MAX_AGE_MS = 24 * 60 * 60_000;
+
+function resolveVisitAt(supplied: string | undefined, actor: AuthenticatedUser, now: Date): Date {
+  if (!supplied) return now;
+
+  const visitAt = new Date(supplied);
+  if (Number.isNaN(visitAt.getTime())) {
+    throw new ValidationError('Visit time is not a valid date');
+  }
+  if (visitAt.getTime() - now.getTime() > MAX_CLOCK_SKEW_MS) {
+    throw new ValidationError('Visit time cannot be in the future');
+  }
+  if (actor.role !== UserRole.ADMIN && now.getTime() - visitAt.getTime() > CASHIER_GROUP_VISIT_MAX_AGE_MS) {
+    throw new AuthorizationError('Only an admin can record a group visit from an earlier day');
+  }
+  return visitAt;
+}
+
+async function buildItemSnapshots(
+  items: CreateBillItemInput[] | undefined,
+  actor: AuthenticatedUser,
+): Promise<BillItemSubdocument[]> {
+  if (!items || items.length === 0) {
+    throw new ValidationError('At least one bill item is required');
+  }
+
+  const now = new Date();
+  const snapshots: BillItemSubdocument[] = [];
+
+  for (const item of items) {
+    // Validation fills a missing kind in as PLAY, but a direct service call may not have.
+    const kind = resolveItemKind(item as { kind?: string });
+
+    if (kind === BillItemKind.GROUP) {
+      const group = item as CreateGroupItemInput;
+      snapshots.push({
+        kind,
+        childName: '',
+        playPackageId: null,
+        packageName: group.groupName,
+        // The rate is per child per hour, so this is the rate denominator, exactly as it
+        // is on a session line. The time charged for is `visitMinutes`.
+        durationMinutes: GROUP_RATE_MINUTES,
+        unitPrice: group.ratePerChildPerHour,
+        quantity: group.headcount,
+        lineTotal: priceGroupVisit({
+          ratePerChildPerHour: group.ratePerChildPerHour,
+          headcount: group.headcount,
+          visitMinutes: group.visitMinutes,
+        }),
+        productId: null,
+        visitAt: resolveVisitAt(group.visitAt, actor, now),
+        visitMinutes: group.visitMinutes,
+        ...NO_SESSION,
+      });
+      continue;
+    }
+
+    if (kind === BillItemKind.PRODUCT) {
+      const line = item as CreateProductItemInput;
+      const product = await productRepository.findById(line.productId);
+      if (!product) {
+        throw new InvalidProductError('The selected product does not exist');
+      }
+      if (!product.isActive) {
+        throw new InvalidProductError(`${product.name} is not currently available`);
+      }
+      if (!Number.isInteger(line.quantity) || line.quantity < 1) {
+        throw new ValidationError('Quantity must be at least 1');
+      }
+
+      snapshots.push({
+        kind,
+        childName: '',
+        playPackageId: null,
+        packageName: product.name,
+        durationMinutes: 0,
+        unitPrice: product.price,
+        quantity: line.quantity,
+        lineTotal: product.price * line.quantity,
+        productId: product._id,
+        visitAt: null,
+        visitMinutes: null,
+        ...NO_SESSION,
+      });
+      continue;
+    }
+
+    const play = item as CreatePlayItemInput;
+    const pkg = await playPackageRepository.findById(play.playPackageId);
+    if (!pkg) {
+      throw new InvalidPlayPackageError('The selected play package does not exist');
+    }
+    if (!pkg.isActive) {
+      throw new InvalidPlayPackageError('The selected play package is not currently available');
+    }
+
+    const quantity = play.quantity ?? 1;
+    if (quantity < 1) {
+      throw new ValidationError('Quantity must be at least 1');
+    }
+
+    snapshots.push({
+      kind: BillItemKind.PLAY,
+      childName: play.childName,
+      playPackageId: pkg._id,
+      packageName: pkg.name,
+      durationMinutes: pkg.durationMinutes,
+      unitPrice: pkg.price,
+      quantity,
+      lineTotal: pkg.price * quantity,
+      productId: null,
+      visitAt: null,
+      visitMinutes: null,
+      // Flat-price path: no session backs these items, and if an admin has since switched
+      // this package to block pricing, that must not follow the line here.
+      ...NO_SESSION,
+    });
+  }
+
+  return snapshots;
+}
+
+/**
+ * A group rate is typed in freely by whoever rings the bill up, so every one is recorded -
+ * it is the one price on a bill that no admin set in advance.
+ */
+async function auditGroupRates(
+  bill: BillHydrated,
+  items: BillItemSubdocument[],
+  actor: AuthenticatedUser,
+): Promise<void> {
+  const groups = items.filter((item) => resolveItemKind(item) === BillItemKind.GROUP);
+  if (groups.length === 0) return;
+
+  await auditLogService.record({
+    userId: actor.id,
+    userName: actor.name,
+    action: AuditAction.BILL_GROUP_RATE_ENTERED,
+    entityType: AuditEntityType.BILL,
+    entityId: bill.id,
+    metadata: {
+      role: actor.role,
+      groups: groups.map((item) => ({
+        groupName: item.packageName,
+        headcount: item.quantity,
+        ratePerChildPerHour: item.unitPrice,
+        visitMinutes: item.visitMinutes,
+        visitAt: item.visitAt,
+        lineTotal: item.lineTotal,
+      })),
+    },
+  });
+}
+
+/**
+ * The PRODUCT lines for whatever was sold onto a session while the child played, each at
+ * the price snapshotted when it was added, and named for the child it was for.
+ */
+function extrasToItems(session: PlaySessionHydrated): BillItemSubdocument[] {
+  return (session.extras ?? []).map((extra) => ({
+    kind: BillItemKind.PRODUCT,
+    childName: session.childName,
+    playPackageId: null,
+    packageName: extra.productName,
+    durationMinutes: 0,
+    unitPrice: extra.unitPrice,
+    quantity: extra.quantity,
+    lineTotal: extra.unitPrice * extra.quantity,
+    productId: extra.productId,
+    visitAt: null,
+    visitMinutes: null,
+    ...NO_SESSION,
+  }));
+}
+
 async function releaseClaimedSessions(sessions: PlaySessionHydrated[]): Promise<void> {
   for (const session of sessions) {
     try {
@@ -213,7 +392,7 @@ async function releaseClaimedSessions(sessions: PlaySessionHydrated[]): Promise<
 export const billService = {
   async createDraft(input: CreateBillInput, actor: AuthenticatedUser): Promise<BillPublic> {
     const settings = await settingsService.getRaw();
-    const items = await buildItemSnapshots(input.items);
+    const items = await buildItemSnapshots(input.items, actor);
 
     const discountType = input.discount?.type ?? DiscountType.NONE;
     const discountValue = input.discount?.value ?? 0;
@@ -262,6 +441,8 @@ export const billService = {
       cashierName: actor.name,
       notes: input.notes ?? '',
     });
+
+    await auditGroupRates(bill, items, actor);
 
     return toPublicBill(bill);
   },
@@ -319,10 +500,12 @@ export const billService = {
         });
 
         // Compare-and-set on ACTIVE: the loser of a race gets null and we roll back.
+        // A family ticket is one child's price times the headcount, frozen here in the
+        // same write that claims it.
         const claimedSession = await playSessionRepository.claimIfActive(ticketCode, {
           checkOutAt,
           billedMinutes,
-          chargedAmount: breakdown.lineTotal,
+          chargedAmount: breakdown.lineTotal * resolveChildCount(session),
           checkOutCashierId: new Types.ObjectId(actor.id),
           checkOutCashierName: actor.name,
         });
@@ -334,24 +517,37 @@ export const billService = {
         claimed.push(claimedSession);
       }
 
-      const items = claimed.map<BillItemSubdocument>((session) => ({
-        childName: session.childName,
-        playPackageId: session.playPackageId,
-        packageName: session.packageName,
-        // The package rate as snapshotted at check-in, never re-read from PlayPackage.
-        durationMinutes: session.rateDurationMinutes,
-        unitPrice: session.unitPrice,
-        quantity: 1,
-        // Frozen on the session by the claim above, in the same atomic write as
-        // billedMinutes - so the bill and the session can never disagree about the amount.
-        lineTotal: session.chargedAmount ?? 0,
-        pricingMode: resolveSessionRate(session).pricingMode,
-        graceMinutes: resolveSessionRate(session).graceMinutes,
-        playSessionId: session._id,
-        checkInAt: session.checkInAt,
-        checkOutAt: session.checkOutAt,
-        billedMinutes: session.billedMinutes,
-      }));
+      const items = claimed.flatMap<BillItemSubdocument>((session) => {
+        const rate = resolveSessionRate(session);
+        const playLine: BillItemSubdocument = {
+          kind: BillItemKind.PLAY,
+          childName: session.childName,
+          playPackageId: session.playPackageId,
+          packageName: session.packageName,
+          // The package rate as snapshotted at check-in, never re-read from PlayPackage.
+          durationMinutes: session.rateDurationMinutes,
+          unitPrice: session.unitPrice,
+          // The children on the ticket. Still not a multiplier of unitPrice: a timed
+          // line's total is lineTotal, never unitPrice x quantity.
+          quantity: resolveChildCount(session),
+          // Frozen on the session by the claim above, in the same atomic write as
+          // billedMinutes - so the bill and the session can never disagree about the amount.
+          lineTotal: session.chargedAmount ?? 0,
+          pricingMode: rate.pricingMode,
+          graceMinutes: rate.graceMinutes,
+          tieredPricing: rate.tieredPricing,
+          productId: null,
+          visitAt: null,
+          visitMinutes: null,
+          playSessionId: session._id,
+          checkInAt: session.checkInAt,
+          checkOutAt: session.checkOutAt,
+          billedMinutes: session.billedMinutes,
+        };
+        // Socks and the like sold while the child played are charged now, on the same
+        // bill, directly after the child's own line.
+        return [playLine, ...extrasToItems(session)];
+      });
 
       const discountType = input.discount?.type ?? DiscountType.NONE;
       const discountValue = input.discount?.value ?? 0;
@@ -423,7 +619,7 @@ export const billService = {
             ticketCodes,
             checkOutAt: checkOutAt.toISOString(),
             grandTotal: totals.grandTotal,
-            children: claimed.map((session) => session.childName),
+            children: claimed.flatMap((session) => resolveChildNames(session)),
           },
         });
       }
@@ -459,7 +655,14 @@ export const billService = {
     if (input.notes !== undefined) bill.notes = input.notes;
 
     if (input.items) {
-      bill.items = await buildItemSnapshots(input.items);
+      if (bill.items.some((item) => item.playSessionId)) {
+        // Replacing the lines would drop the session lines and strand their claimed
+        // tickets: closed, but billed by nothing. Cancel the checkout instead.
+        throw new InvalidStateError(
+          'The lines of a checkout cannot be replaced - cancel it and check out again',
+        );
+      }
+      bill.items = await buildItemSnapshots(input.items, actor);
     }
 
     const discountType = input.discount?.type ?? bill.discountType;
@@ -497,6 +700,8 @@ export const billService = {
     bill.grandTotal = totals.grandTotal;
 
     await bill.save();
+
+    if (input.items) await auditGroupRates(bill, bill.items, actor);
 
     return toPublicBill(bill);
   },
@@ -558,11 +763,21 @@ export const billService = {
     }
     const balance = paidAmount - totals.grandTotal;
 
-    const billNumber = await billNumberService.generate(settings.timezone);
-    const paidAt = new Date();
+    // Recovering a checkout abandoned at the till: the payment is dated to the checkout,
+    // so the bill number and the day the revenue counts on are the day it really happened.
+    // Admin-only, and the time is derived from the bill - never supplied - so this cannot
+    // be used to move a payment to an arbitrary day. Clamped to now because a session's
+    // checkOutAt is the till's clock, which may run slightly ahead of the server's.
+    const recordedAt = new Date();
+    const backdated = input.backdateToCheckout === true;
+    if (backdated && actor.role !== UserRole.ADMIN) {
+      throw new AuthorizationError('Only an admin can date a payment to the checkout time');
+    }
+    const paidAt = backdated
+      ? new Date(Math.min(checkoutTimeOf(bill).getTime(), recordedAt.getTime()))
+      : recordedAt;
 
-    const updated = await billRepository.completeIfDraft(id, {
-      billNumber,
+    const update = {
       status: BillStatus.PAID,
       subtotal: totals.subtotal,
       discount: totals.discount,
@@ -572,7 +787,30 @@ export const billService = {
       balance,
       paymentMethod: input.paymentMethod,
       paidAt,
-    });
+      ...(backdated
+        ? {
+            paymentRecordedAt: recordedAt,
+            paymentRecordedBy: new Types.ObjectId(actor.id),
+            paymentRecordedByName: actor.name,
+          }
+        : {}),
+    };
+
+    let updated: BillHydrated | null;
+    try {
+      updated = await billRepository.completeIfDraft(id, {
+        ...update,
+        billNumber: await billNumberService.generate(settings.timezone, paidAt),
+      });
+    } catch (error) {
+      // Two backdated payments racing onto the same second can both pass the generator's
+      // free-number check; the unique index rejects the loser. One fresh number settles it.
+      if (!isDuplicateBillNumberError(error)) throw error;
+      updated = await billRepository.completeIfDraft(id, {
+        ...update,
+        billNumber: await billNumberService.generate(settings.timezone, paidAt),
+      });
+    }
 
     if (!updated) {
       throw new InvalidStateError('Bill is no longer in draft status - it may have already been completed');
@@ -595,16 +833,49 @@ export const billService = {
       });
     }
 
-    if (updated.customerId || updated.phoneNumber) {
-      await customerService.recordVisit(
-        {
-          id: updated.customerId ? updated.customerId.toString() : undefined,
-          parentName: updated.parentName || undefined,
-          phoneNumber: updated.phoneNumber || undefined,
+    // A draft paid by someone other than the cashier who created it is the recovery path
+    // for a checkout abandoned at the till (an admin recording a payment that was taken
+    // but never confirmed). The bill keeps its original cashier; this records who
+    // actually took the money into the system, and when the draft was really made. A
+    // backdated payment is always audited, even when the admin was the bill's cashier.
+    if (bill.cashierId.toString() !== actor.id || backdated) {
+      await auditLogService.record({
+        userId: actor.id,
+        userName: actor.name,
+        action: AuditAction.BILL_PAYMENT_RECORDED_BY_OTHER,
+        entityType: AuditEntityType.BILL,
+        entityId: updated.id,
+        metadata: {
+          originalCashierId: bill.cashierId.toString(),
+          originalCashierName: bill.cashierName,
+          draftCreatedAt: bill.createdAt,
+          paymentMethod: input.paymentMethod,
+          paidAmount,
+          grandTotal: totals.grandTotal,
+          paidAt,
+          backdatedToCheckout: backdated,
+          paymentRecordedAt: recordedAt,
         },
-        totals.grandTotal,
-        paidAt,
-      );
+      });
+    }
+
+    if (updated.customerId || updated.phoneNumber) {
+      const customerId = await customerService.ensureCustomer({
+        id: updated.customerId ? updated.customerId.toString() : undefined,
+        parentName: updated.parentName || undefined,
+        phoneNumber: updated.phoneNumber || undefined,
+      });
+      if (customerId) {
+        // Linked here, at payment, because a cashier rarely picks a customer by hand: the
+        // phone number typed at the till is what ties most bills - and the tickets they
+        // paid for - to a family.
+        if (!updated.customerId) {
+          await billRepository.setCustomerIdIfUnset(updated._id, customerId);
+          updated.customerId = new Types.ObjectId(customerId);
+        }
+        await playSessionRepository.setCustomerIdByBillId(updated._id, customerId);
+        await customerService.recomputeStats(customerId);
+      }
     }
 
     return toPublicBill(updated);
@@ -649,6 +920,10 @@ export const billService = {
       await playSessionRepository.reopen(session._id);
     }
 
+    // A paid bill counted towards the family's visits and spend; cancelling it must take
+    // that back. A draft never reached them, so there is nothing to correct.
+    if (updated.paidAt) await customerService.recomputeStatsForBill(updated);
+
     await auditLogService.record({
       userId: actor.id,
       userName: actor.name,
@@ -685,6 +960,9 @@ export const billService = {
     if (!updated) {
       throw new InvalidStateError('Only paid bills can be refunded, or this bill was already refunded');
     }
+
+    // Still a visit - the family came and played - but no longer money they spent.
+    await customerService.recomputeStatsForBill(updated);
 
     await auditLogService.record({
       userId: actor.id,
@@ -755,21 +1033,9 @@ export const billService = {
     // sessions too or a test checkout would still count towards play hours and occupancy.
     const sessionsUpdated = await playSessionRepository.setTestFlagByBillId(updated.id, isTestBill);
 
-    // Completion already added this bill to the parent's visit count and lifetime spend.
-    // Excluding it from business income has to unwind that as well, otherwise the customer
-    // record keeps reporting money the business never took. Keyed off `paidAt` because
-    // that is exactly the condition under which recordVisit ran - a bill cancelled while
-    // still a draft never reached it.
-    if (updated.paidAt && (updated.customerId || updated.phoneNumber)) {
-      const sign = isTestBill ? -1 : 1;
-      await customerService.adjustVisitStats(
-        {
-          id: updated.customerId ? updated.customerId.toString() : undefined,
-          phoneNumber: updated.phoneNumber || undefined,
-        },
-        { visitCount: sign, totalSpent: sign * updated.grandTotal },
-      );
-    }
+    // A test bill is not a visit and not spend, so the family's figures are rebuilt
+    // without it - or with it again, when the flag is taken off.
+    if (updated.paidAt) await customerService.recomputeStatsForBill(updated);
 
     await auditLogService.record({
       userId: actor.id,

@@ -1,5 +1,5 @@
 import { PlayPackageModel, type PlayPackageHydrated } from './playPackage.model';
-import type { SessionPricingMode } from '../../common/constants/pricingModes';
+import type { SessionPricingMode, TieredPricing } from '../../common/constants/pricingModes';
 import { getSkip } from '../../common/utils/pagination';
 
 export const playPackageRepository = {
@@ -13,6 +13,7 @@ export const playPackageRepository = {
     price: number;
     pricingMode: SessionPricingMode;
     graceMinutes: number;
+    tieredPricing: TieredPricing | null;
     description: string;
     sortOrder: number;
     createdBy: string;

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  priceGroupVisit,
   calculateSubtotal,
   calculateDiscountAmount,
   calculateTax,
@@ -10,6 +11,7 @@ import {
   calculateSessionLineTotal,
   priceSession,
   priceSessionForPeriod,
+  checkoutTimeOf,
 } from './billCalculator';
 import { DiscountType } from '../../common/constants/billStatus';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
@@ -319,6 +321,10 @@ describe('billCalculator', () => {
         graceApplied: false,
         inExtraTime: true,
         minutesUntilNextCharge: 0,
+        hourLines: [],
+        overtime: null,
+        rawTotal: 90_000,
+        roundingAdjustment: 0,
       });
     });
 
@@ -424,6 +430,10 @@ describe('billCalculator', () => {
           graceApplied: false,
           inExtraTime: false,
           minutesUntilNextCharge: null,
+          hourLines: [],
+          overtime: null,
+          rawTotal: calculateSessionLineTotal({ ...rate, billedMinutes }),
+          roundingAdjustment: 0,
         });
       }
     });
@@ -525,5 +535,43 @@ describe('billCalculator', () => {
         125_000,
       );
     });
+  });
+});
+
+describe('checkoutTimeOf', () => {
+  const createdAt = new Date('2026-10-01T08:28:23.931Z');
+
+  it('is the latest item checkout on a session bill', () => {
+    expect(
+      checkoutTimeOf({
+        createdAt,
+        items: [
+          { checkOutAt: new Date('2026-10-01T08:20:00.000Z') },
+          { checkOutAt: new Date('2026-10-01T08:28:23.503Z') },
+        ],
+      }),
+    ).toEqual(new Date('2026-10-01T08:28:23.503Z'));
+  });
+
+  it('falls back to when the draft was created on a flat bill', () => {
+    expect(checkoutTimeOf({ createdAt, items: [{ checkOutAt: null }, {}] })).toEqual(createdAt);
+  });
+});
+
+describe('priceGroupVisit', () => {
+  it('multiplies headcount, rate and hours', () => {
+    // 20 children x LKR 300.00 x 2h
+    expect(priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 20, visitMinutes: 120 })).toBe(1200000);
+  });
+
+  it('prices part hours pro-rata and rounds only once', () => {
+    expect(priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 20, visitMinutes: 90 })).toBe(900000);
+    expect(priceGroupVisit({ ratePerChildPerHour: 33333, headcount: 7, visitMinutes: 50 })).toBe(194443);
+  });
+
+  it('refuses inputs that cannot be a real visit', () => {
+    expect(() => priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 0, visitMinutes: 60 })).toThrow();
+    expect(() => priceGroupVisit({ ratePerChildPerHour: 300.5, headcount: 1, visitMinutes: 60 })).toThrow();
+    expect(() => priceGroupVisit({ ratePerChildPerHour: 30000, headcount: 1, visitMinutes: 0 })).toThrow();
   });
 });

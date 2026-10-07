@@ -45,8 +45,10 @@ Feature-based modules under `src/modules/<name>/`, each typically containing
 controllers), `*.controller.ts` (thin, maps req/res to service calls), `*.validation.ts`
 (Zod schemas), `*.routes.ts` (Express router + inline `@openapi` JSDoc), `*.types.ts`.
 
-Modules: `auth`, `users`, `play-packages`, `customers`, `bills`, `dashboard`,
-`settings`, `audit-logs`. `src/routes/index.ts` mounts all of them under `/api/v1`.
+Modules: `auth`, `users`, `play-packages`, `play-sessions`, `products`, `customers`,
+`bills`, `dashboard`, `reports`, `settings`, `audit-logs`. Bill lines have a `kind` (`PLAY`,
+`GROUP`, `PRODUCT`; a missing kind is `PLAY`). See `../docs/custom-bills.md` before
+touching bill items, dashboard counts or session extras. `src/routes/index.ts` mounts all of them under `/api/v1`.
 Cross-cutting code lives in `src/common/` (errors, logger, money/pagination/date-range
 utils, constants) and `src/middleware/` (auth, RBAC, Zod validation, rate limiting,
 error handling, request-id, CORS/helmet).
@@ -94,6 +96,12 @@ reports must never recompute from the current `PlayPackage` price.
   above that threshold get an audit log entry regardless of role.
 
 ### Dashboard aggregations
+
+The match fragments every income pipeline shares (`EXCLUDE_TEST_BILLS`,
+`revenueRecognizedMatch`, `CHILDREN_ON_BILL`, ...) live in
+`src/common/reporting/billFilters.ts`, used by both `dashboard` and `reports`. Change them
+there, never inline a copy - the daily-close report is tested to equal the dashboard summary.
+See `../docs/reports.md` for the reports module.
 
 `dashboard.service.ts` runs Mongo aggregation pipelines directly against `BillModel`.
 All date bucketing/filtering uses `BusinessSettings.timezone` (default `Asia/Colombo`),

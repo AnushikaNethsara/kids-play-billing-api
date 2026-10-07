@@ -102,7 +102,7 @@ describe('marking a bill as a test bill', () => {
     expect(second.body.data.isTestBill).toBe(true);
 
     // The customer correction must not be applied twice by a retry.
-    const customer = await CustomerModel.findOne({ phoneNumber: '0771234567' });
+    const customer = await CustomerModel.findOne({ phoneNumber: '+94771234567' });
     expect(customer?.visitCount).toBe(0);
     expect(customer?.totalSpent).toBe(0);
   });
@@ -197,19 +197,19 @@ describe('test bills and reporting', () => {
 
     const bill = await payBill(cashierToken, pkg.id, '0779999999');
 
-    const afterPayment = await CustomerModel.findOne({ phoneNumber: '0779999999' });
+    const afterPayment = await CustomerModel.findOne({ phoneNumber: '+94779999999' });
     expect(afterPayment?.visitCount).toBe(1);
     expect(afterPayment?.totalSpent).toBe(80000);
 
     await markAsTest(adminToken, bill.id, true, 'training');
 
-    const afterMarking = await CustomerModel.findOne({ phoneNumber: '0779999999' });
+    const afterMarking = await CustomerModel.findOne({ phoneNumber: '+94779999999' });
     expect(afterMarking?.visitCount).toBe(0);
     expect(afterMarking?.totalSpent).toBe(0);
 
     await markAsTest(adminToken, bill.id, false);
 
-    const afterRestore = await CustomerModel.findOne({ phoneNumber: '0779999999' });
+    const afterRestore = await CustomerModel.findOne({ phoneNumber: '+94779999999' });
     expect(afterRestore?.visitCount).toBe(1);
     expect(afterRestore?.totalSpent).toBe(80000);
   });

@@ -36,6 +36,18 @@ export function formatDuration(minutes: number): string {
   return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
 }
 
+/**
+ * A rate for a narrow receipt column: "600" for a whole amount, "433.50" otherwise. Rates
+ * are for reading only; the amounts beside them are the money.
+ */
+export function formatCompactRate(minorAmount: number): string {
+  const major = minorAmount / 100;
+  return major.toLocaleString('en-LK', {
+    minimumFractionDigits: Number.isInteger(major) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export function wrapText(text: string, width: number): string[] {
   if (text.length <= width) return [text];
   const lines: string[] = [];

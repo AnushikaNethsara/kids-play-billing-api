@@ -4,6 +4,9 @@ import { authenticate } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../common/utils/asyncHandler';
 import {
+  addSessionExtrasSchema,
+  removeSessionExtraSchema,
+  sessionExtraParamSchema,
   checkInSchema,
   listPlaySessionsQuerySchema,
   playSessionIdParamSchema,
@@ -20,12 +23,15 @@ router.use(authenticate);
  * /play-sessions:
  *   post:
  *     tags: [Play Sessions]
- *     summary: Check a child in and open a play session
+ *     summary: Check a child - or a family of children - in and open a play session
  *     description: >
  *       Opens a timed session and returns the ticket the QR slip encodes. The client
  *       supplies `ticketCode`, which is unique - re-sending the same code returns the
  *       existing session with a 200 instead of creating a duplicate, so an offline
  *       cashier app can retry a failed sync safely without an Idempotency-Key header.
+ *       Send `childName` for one child, or `childNames` for a family ticket - several
+ *       children on the same package who check out together, charged one child's price
+ *       times `childCount`. Exactly one of the two.
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
@@ -33,12 +39,18 @@ router.use(authenticate);
  *         application/json:
  *           schema:
  *             type: object
- *             required: [ticketCode, childName, playPackageId]
+ *             required: [ticketCode, playPackageId]
  *             properties:
  *               ticketCode:
  *                 type: string
  *                 description: Device-generated code encoded in the printed QR
- *               childName: { type: string }
+ *               childName: { type: string, description: A single child }
+ *               childNames:
+ *                 type: array
+ *                 description: A family ticket - one name per child
+ *                 minItems: 1
+ *                 maxItems: 10
+ *                 items: { type: string }
  *               playPackageId: { type: string }
  *               checkInAt:
  *                 type: string
@@ -50,6 +62,16 @@ router.use(authenticate);
  *                   customerId: { type: string }
  *                   parentName: { type: string }
  *                   phoneNumber: { type: string }
+ *               extras:
+ *                 type: array
+ *                 description: Products handed over at check-in (socks), charged at checkout
+ *                 items:
+ *                   type: object
+ *                   required: [localId, productId, quantity]
+ *                   properties:
+ *                     localId: { type: string, description: Device-generated idempotency key }
+ *                     productId: { type: string }
+ *                     quantity: { type: integer, minimum: 1 }
  *     responses:
  *       201: { description: Session opened }
  *       200: { description: Ticket was already checked in (idempotent replay) }
@@ -90,7 +112,8 @@ router.get('/', validate({ query: listPlaySessionsQuerySchema }), asyncHandler(p
  *     description: >
  *       The checkout scan endpoint. The returned `quote` is advisory - a live number for
  *       the cashier's screen. The amount actually charged is recomputed inside
- *       `POST /bills/from-sessions`.
+ *       `POST /bills/from-sessions`. On a family ticket `quote.lineTotal` is the whole
+ *       ticket (`perChildLineTotal` x `childCount`); `quote.breakdown` explains one child.
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - { in: path, name: ticketCode, required: true, schema: { type: string } }
@@ -102,6 +125,67 @@ router.get(
   '/ticket/:ticketCode',
   validate({ params: ticketCodeParamSchema }),
   asyncHandler(playSessionController.getByTicketCode),
+);
+
+/**
+ * @openapi
+ * /play-sessions/ticket/{ticketCode}/extras:
+ *   post:
+ *     tags: [Play Sessions]
+ *     summary: Sell products (socks) onto a child who is playing
+ *     description: >
+ *       Each extra is snapshotted at the product's current price and charged at checkout
+ *       as a PRODUCT line on the session's bill. Idempotent per `localId`. Refused with 409
+ *       once the ticket has been checked out.
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: ticketCode, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [extras]
+ *             properties:
+ *               extras:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required: [localId, productId, quantity]
+ *                   properties:
+ *                     localId: { type: string }
+ *                     productId: { type: string }
+ *                     quantity: { type: integer, minimum: 1 }
+ *     responses:
+ *       200: { description: The session with its extras }
+ *       409: { description: Ticket already checked out }
+ *       422: { description: Product missing or inactive }
+ */
+router.post(
+  '/ticket/:ticketCode/extras',
+  validate({ params: ticketCodeParamSchema, body: addSessionExtrasSchema }),
+  asyncHandler(playSessionController.addExtras),
+);
+
+/**
+ * @openapi
+ * /play-sessions/ticket/{ticketCode}/extras/{localId}:
+ *   delete:
+ *     tags: [Play Sessions]
+ *     summary: Take back an extra added by mistake, before checkout (audited)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: ticketCode, required: true, schema: { type: string } }
+ *       - { in: path, name: localId, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: The session without the extra (also when it was already gone) }
+ *       409: { description: Ticket already checked out }
+ */
+router.delete(
+  '/ticket/:ticketCode/extras/:localId',
+  validate({ params: sessionExtraParamSchema, body: removeSessionExtraSchema }),
+  asyncHandler(playSessionController.removeExtra),
 );
 
 /**

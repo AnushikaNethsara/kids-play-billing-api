@@ -1,9 +1,9 @@
 import { BillModel } from '../bills/bill.model';
-import { PlaySessionModel } from '../play-sessions/playSession.model';
+import { PlaySessionModel, resolveChildCount } from '../play-sessions/playSession.model';
 import { BillStatus } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
-import { SessionPricingMode } from '../../common/constants/pricingModes';
+import { BillItemKind } from '../../common/constants/billItemKind';
 import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { resolveDateRange } from '../../common/utils/dateRange';
@@ -17,6 +17,7 @@ import type {
   YearlyRevenuePoint,
   BillsBreakdown,
   PackagePerformance,
+  ProductPerformance,
   PaymentMethodBreakdown,
   CashierPerformance,
   SessionSummary,
@@ -24,33 +25,15 @@ import type {
 } from './dashboard.types';
 import { billService } from '../bills/bill.service';
 import type { BillPublic } from '../bills/bill.types';
-
-/**
- * Bills an admin has flagged as tests - training runs, printer checks, demos - are not
- * business activity and are excluded from every figure on this dashboard, including the
- * counts, not just the money.
- *
- * `$ne: true` rather than `false` deliberately: bills written before the flag existed
- * carry no such field at all, and matching on `false` would silently drop all of them
- * from history.
- */
-const EXCLUDE_TEST_BILLS = { isTestBill: { $ne: true } } as const;
-
-/** The same exclusion, on the sessions those bills were checked out from. */
-const EXCLUDE_TEST_SESSIONS = { isTestBill: { $ne: true } } as const;
-
-/**
- * Revenue-recognized bills are those that were actually paid for at some point - PAID
- * and REFUNDED both count, since a refund is a reversal of a real transaction, not the
- * absence of one. CANCELLED bills never entered revenue and are tracked separately.
- */
-function revenueRecognizedMatch(start: Date, end: Date) {
-  return {
-    ...EXCLUDE_TEST_BILLS,
-    status: { $in: [BillStatus.PAID, BillStatus.REFUNDED] },
-    paidAt: { $gte: start, $lte: end },
-  };
-}
+import {
+  EXCLUDE_TEST_BILLS,
+  EXCLUDE_TEST_SESSIONS,
+  revenueRecognizedMatch,
+  CHILDREN_ON_BILL,
+  PLAY_LINES_ONLY,
+  minimumAppliedExpr,
+  SESSION_CHILD_COUNT,
+} from '../../common/reporting/billFilters';
 
 async function resolveRange(query: DashboardQuery) {
   const settings = await settingsService.getRaw();
@@ -74,7 +57,7 @@ export const dashboardService = {
           paidBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.PAID] }, 1, 0] } },
           refundedBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, 1, 0] } },
           paidGrandTotalSum: { $sum: { $cond: [{ $eq: ['$status', BillStatus.PAID] }, '$grandTotal', 0] } },
-          childrenServed: { $sum: { $size: '$items' } },
+          childrenServed: { $sum: CHILDREN_ON_BILL },
           cashAmount: { $sum: { $cond: [{ $eq: ['$paymentMethod', PaymentMethod.CASH] }, '$grandTotal', 0] } },
           cashCount: { $sum: { $cond: [{ $eq: ['$paymentMethod', PaymentMethod.CASH] }, 1, 0] } },
           cardAmount: { $sum: { $cond: [{ $eq: ['$paymentMethod', PaymentMethod.CARD] }, '$grandTotal', 0] } },
@@ -99,6 +82,7 @@ export const dashboardService = {
     const [bestSellingPackage] = await BillModel.aggregate([
       { $match: match },
       { $unwind: '$items' },
+      PLAY_LINES_ONLY,
       {
         $group: {
           _id: '$items.playPackageId',
@@ -124,6 +108,25 @@ export const dashboardService = {
       { $sort: { revenue: -1 } },
       { $limit: 1 },
     ]);
+
+    const kindRows = await BillModel.aggregate<{
+      _id: BillItemKind;
+      revenue: number;
+      quantity: number;
+      lines: number;
+    }>([
+      { $match: match },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: { $ifNull: ['$items.kind', BillItemKind.PLAY] },
+          revenue: { $sum: '$items.lineTotal' },
+          quantity: { $sum: '$items.quantity' },
+          lines: { $sum: 1 },
+        },
+      },
+    ]);
+    const byKind = new Map(kindRows.map((row) => [row._id, row]));
 
     const grossRevenue = totals?.grossRevenue ?? 0;
     const discounts = totals?.discounts ?? 0;
@@ -161,6 +164,16 @@ export const dashboardService = {
             billCount: topCashier.billCount,
           }
         : null,
+      revenueByKind: {
+        play: byKind.get(BillItemKind.PLAY)?.revenue ?? 0,
+        group: byKind.get(BillItemKind.GROUP)?.revenue ?? 0,
+        product: byKind.get(BillItemKind.PRODUCT)?.revenue ?? 0,
+      },
+      groupVisits: {
+        count: byKind.get(BillItemKind.GROUP)?.lines ?? 0,
+        headcount: byKind.get(BillItemKind.GROUP)?.quantity ?? 0,
+      },
+      productUnitsSold: byKind.get(BillItemKind.PRODUCT)?.quantity ?? 0,
     };
   },
 
@@ -180,7 +193,7 @@ export const dashboardService = {
           discounts: { $sum: '$discount' },
           refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
           billCount: { $sum: 1 },
-          childrenCount: { $sum: { $size: '$items' } },
+          childrenCount: { $sum: CHILDREN_ON_BILL },
         },
       },
       { $sort: { _id: 1 } },
@@ -224,6 +237,7 @@ export const dashboardService = {
     const rows = await BillModel.aggregate([
       { $match: revenueRecognizedMatch(start, end) },
       { $unwind: '$items' },
+      PLAY_LINES_ONLY,
       {
         $group: {
           _id: '$items.playPackageId',
@@ -238,6 +252,33 @@ export const dashboardService = {
     return rows.map((row) => ({
       playPackageId: row._id.toString(),
       packageName: row.packageName,
+      quantitySold: row.quantitySold,
+      revenue: row.revenue,
+    }));
+  },
+
+  /** Counter sales per product, grouped by id so a renamed product stays one row. */
+  async getProductPerformance(query: DashboardQuery): Promise<ProductPerformance[]> {
+    const { start, end } = await resolveRange(query);
+
+    const rows = await BillModel.aggregate([
+      { $match: revenueRecognizedMatch(start, end) },
+      { $unwind: '$items' },
+      { $match: { 'items.kind': BillItemKind.PRODUCT } },
+      {
+        $group: {
+          _id: '$items.productId',
+          productName: { $last: '$items.packageName' },
+          quantitySold: { $sum: '$items.quantity' },
+          revenue: { $sum: '$items.lineTotal' },
+        },
+      },
+      { $sort: { revenue: -1 } },
+    ]);
+
+    return rows.map((row) => ({
+      productId: row._id ? row._id.toString() : '',
+      productName: row.productName,
       quantitySold: row.quantitySold,
       revenue: row.revenue,
     }));
@@ -331,6 +372,7 @@ export const dashboardService = {
 
     const [totals] = await PlaySessionModel.aggregate<{
       sessionCount: number;
+      childCount: number;
       totalPlayMinutes: number;
       longestPlayMinutes: number;
       minimumAppliedCount: number;
@@ -341,33 +383,14 @@ export const dashboardService = {
         $group: {
           _id: null,
           sessionCount: { $sum: 1 },
-          totalPlayMinutes: { $sum: '$billedMinutes' },
+          childCount: { $sum: SESSION_CHILD_COUNT },
+          // Child-minutes: a family of three playing an hour is three hours of play, which
+          // is what keeps revenue per play hour honest when the ticket charges three.
+          totalPlayMinutes: { $sum: { $multiply: ['$billedMinutes', SESSION_CHILD_COUNT] } },
           longestPlayMinutes: { $max: '$billedMinutes' },
           // A session billed at exactly the minimum is one where the child left early
-          // enough for the floor to bite. The floor does not apply to block pricing, so a
-          // short block visit is not one of these - counting it would report a minimum
-          // that was never applied. The `$ifNull` is load-bearing: an aggregation reads
-          // raw BSON, where a session written before pricing modes has no such key at all
-          // and Mongoose's schema default never runs.
-          minimumAppliedCount: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $lte: ['$billedMinutes', minimumBillableMinutes] },
-                    {
-                      $ne: [
-                        { $ifNull: ['$pricingMode', SessionPricingMode.PRORATA] },
-                        SessionPricingMode.BLOCK_WITH_GRACE,
-                      ],
-                    },
-                  ],
-                },
-                1,
-                0,
-              ],
-            },
-          },
+          // enough for the floor to bite; see minimumAppliedExpr for which sessions count.
+          minimumAppliedCount: { $sum: minimumAppliedExpr(minimumBillableMinutes) },
           // Read the amount frozen at checkout rather than recomputing it. Two pricing
           // models re-expressed in a pipeline would be a third copy of the rules in the
           // least testable language available; sessions closed before `chargedAmount`
@@ -418,14 +441,16 @@ export const dashboardService = {
     ]);
 
     const sessionCount = totals?.sessionCount ?? 0;
+    const childCount = totals?.childCount ?? 0;
     const totalPlayMinutes = totals?.totalPlayMinutes ?? 0;
     const revenue = totals?.revenue ?? 0;
     const playHours = totalPlayMinutes / 60;
 
     return {
       sessionCount,
+      childCount,
       totalPlayMinutes,
-      averagePlayMinutes: sessionCount > 0 ? Math.round(totalPlayMinutes / sessionCount) : 0,
+      averagePlayMinutes: childCount > 0 ? Math.round(totalPlayMinutes / childCount) : 0,
       longestPlayMinutes: totals?.longestPlayMinutes ?? 0,
       minimumAppliedCount: totals?.minimumAppliedCount ?? 0,
       revenuePerPlayHour: playHours > 0 ? Math.round(revenue / playHours) : 0,
@@ -457,7 +482,7 @@ export const dashboardService = {
         checkInAt: { $lte: end },
         $or: [{ checkOutAt: { $gte: start } }, { checkOutAt: null }],
       },
-      { checkInAt: 1, checkOutAt: 1 },
+      { checkInAt: 1, checkOutAt: 1, childCount: 1 },
     ).lean();
 
     const buckets = new Array<number>(24).fill(0);
@@ -482,7 +507,8 @@ export const dashboardService = {
             hour12: false,
           }).format(cursor),
         );
-        buckets[hour % 24] += 1;
+        // A family ticket puts several children in the room at once.
+        buckets[hour % 24] += resolveChildCount(session);
         cursor.setUTCHours(cursor.getUTCHours() + 1);
       }
     }

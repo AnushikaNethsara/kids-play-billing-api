@@ -1,6 +1,13 @@
 import { DiscountType } from '../../common/constants/billStatus';
-import { SessionPricingMode } from '../../common/constants/pricingModes';
+import {
+  OvertimeMode,
+  RoundingMode,
+  SessionPricingMode,
+  TIER_MINUTES,
+  type TieredPricing,
+} from '../../common/constants/pricingModes';
 import { UserRole } from '../../common/constants/roles';
+import { GROUP_RATE_MINUTES } from '../../common/constants/billItemKind';
 import { PaymentError, ValidationError } from '../../common/errors';
 import { calculatePercentage, sumMinorUnits } from '../../common/utils/money';
 import type { BillItemPublic } from './bill.types';
@@ -171,6 +178,28 @@ export interface SessionRateSnapshot {
   rateDurationMinutes: number;
   /** Ignored under PRORATA, where it is always snapshotted as 0. */
   graceMinutes: number;
+  /** The hourly rates, overtime and rounding. Required under TIERED_HOURLY, ignored otherwise. */
+  tieredPricing?: TieredPricing | null;
+}
+
+/** One whole hour charged under TIERED_HOURLY. */
+export interface TierHourLine {
+  /** 1-based: 1 is the first hour. */
+  hour: number;
+  rate: number;
+  amount: number;
+}
+
+/** The extra time past grace under TIERED_HOURLY, charged at the next hour's rate. */
+export interface TierOvertime {
+  /** The hour whose rate the extra time is charged at, 1-based. */
+  hour: number;
+  rate: number;
+  /** Minutes actually played past the last whole hour. */
+  minutes: number;
+  /** Minutes charged: equal to `minutes` per minute, or rounded up to whole blocks. */
+  chargedMinutes: number;
+  amount: number;
 }
 
 /**
@@ -206,10 +235,150 @@ export interface SessionPriceBreakdown {
    * already in extra time, null under PRORATA, where every minute costs something.
    */
   minutesUntilNextCharge: number | null;
+  /** The whole hours charged under TIERED_HOURLY, one per hour. Empty under other modes. */
+  hourLines: TierHourLine[];
+  /** The extra time charged under TIERED_HOURLY. Null when none, and under other modes. */
+  overtime: TierOvertime | null;
+  /** The total before rounding. Equal to `lineTotal` except under a rounded TIERED_HOURLY package. */
+  rawTotal: number;
+  /** `lineTotal - rawTotal`: what rounding added (positive) or removed (negative). */
+  roundingAdjustment: number;
 }
 
 /**
- * Prices a session under either pricing mode. **The only pricing entry point callers
+ * Rounds a total in minor units to a multiple of `step`. A step of 0 leaves it unchanged.
+ * NEAREST rounds a tie up, so 1,150 to the nearest 100 is 1,200.
+ */
+export function applyRounding(amount: number, step: number, mode: RoundingMode): number {
+  if (!Number.isFinite(step) || step <= 0) return amount;
+  const units = amount / step;
+  switch (mode) {
+    case RoundingMode.UP:
+      return Math.ceil(units) * step;
+    case RoundingMode.DOWN:
+      return Math.floor(units) * step;
+    default:
+      return Math.floor(units + 0.5) * step;
+  }
+}
+
+function tierRate(rates: number[], hour: number): number {
+  return rates[Math.min(hour, rates.length) - 1];
+}
+
+/**
+ * Prices a TIERED_HOURLY session. With G = graceMinutes and rate(n) = the rate of hour n
+ * (the last rate repeats):
+ *
+ *   hours     = floor(billedMinutes / 60)
+ *   remainder = billedMinutes - hours * 60
+ *   charged   = hours 1..max(hours, 1), each at rate(n)   // the 1st hour is the minimum
+ *   extra     = (hours >= 1 && remainder > G) ? remainder charged at rate(hours + 1) : 0
+ *
+ * As under BLOCK_WITH_GRACE, past grace the **whole** remainder is charged, not just the
+ * minutes after the grace. Per minute it costs `round(rate * remainder / 60)`; in blocks,
+ * the remainder is rounded up to whole blocks, capped at 60, first. Each amount is rounded
+ * to whole minor units once, then the total is rounded by the package's rounding rule.
+ *
+ * At 600/500/400/400 with G = 10, per minute: 71 minutes is 600 + 500 x 11/60 = 691.67;
+ * 131 minutes is 600 + 500 + 400 x 11/60 = 1,173.33; 240 minutes is 1,900.
+ */
+export function priceTieredSession(
+  rate: SessionRateSnapshot,
+  billedMinutes: number,
+): SessionPriceBreakdown {
+  const config = rate.tieredPricing;
+  if (!config) {
+    throw new ValidationError('A tiered package needs its hourly rates to price a session');
+  }
+  const rates = config.hourlyRates;
+  if (rates.length === 0 || rates.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new ValidationError('Tiered hourly rates must be non-negative amounts');
+  }
+  if (!Number.isFinite(billedMinutes) || billedMinutes < 0) {
+    throw new ValidationError('Billed minutes cannot be negative');
+  }
+  const { graceMinutes } = rate;
+  if (!Number.isFinite(graceMinutes) || graceMinutes < 0) {
+    throw new ValidationError('Grace minutes cannot be negative');
+  }
+
+  const completedHours = Math.floor(billedMinutes / TIER_MINUTES);
+  const remainder = billedMinutes - completedHours * TIER_MINUTES;
+  const hoursCharged = Math.max(completedHours, 1);
+
+  const hourLines: TierHourLine[] = [];
+  for (let hour = 1; hour <= hoursCharged; hour += 1) {
+    const hourRate = tierRate(rates, hour);
+    hourLines.push({ hour, rate: hourRate, amount: hourRate });
+  }
+  const hourSubtotal = hourLines.reduce((sum, line) => sum + line.amount, 0);
+
+  const isBlock = config.overtimeMode === OvertimeMode.BLOCK;
+  const blockMinutes =
+    Number.isFinite(config.overtimeBlockMinutes) && config.overtimeBlockMinutes > 0
+      ? Math.min(config.overtimeBlockMinutes, TIER_MINUTES)
+      : TIER_MINUTES;
+
+  const chargeable = completedHours >= 1 && remainder > graceMinutes;
+  let overtime: TierOvertime | null = null;
+  if (chargeable) {
+    const overtimeHour = completedHours + 1;
+    const overtimeRate = tierRate(rates, overtimeHour);
+    const chargedMinutes = isBlock
+      ? Math.min(Math.ceil(remainder / blockMinutes) * blockMinutes, TIER_MINUTES)
+      : remainder;
+    overtime = {
+      hour: overtimeHour,
+      rate: overtimeRate,
+      minutes: remainder,
+      chargedMinutes,
+      amount: Math.round((overtimeRate * chargedMinutes) / TIER_MINUTES),
+    };
+  }
+
+  const rawTotal = hourSubtotal + (overtime?.amount ?? 0);
+  const lineTotal = applyRounding(rawTotal, config.roundingStep, config.roundingMode);
+
+  // Before grace runs out, the next rise is the first chargeable minute, capped at the
+  // next whole hour as under BLOCK_WITH_GRACE. Per minute, every minute in extra time
+  // costs something; in blocks, the next rise is the first minute of the next block.
+  let minutesUntilNextCharge: number;
+  if (!overtime) {
+    const nextChargeAtMinute = Math.min(
+      hoursCharged * TIER_MINUTES + graceMinutes + 1,
+      (hoursCharged + 1) * TIER_MINUTES,
+    );
+    minutesUntilNextCharge = Math.max(nextChargeAtMinute - billedMinutes, 0);
+  } else if (isBlock && overtime.chargedMinutes < TIER_MINUTES) {
+    minutesUntilNextCharge =
+      completedHours * TIER_MINUTES + overtime.chargedMinutes + 1 - billedMinutes;
+  } else if (isBlock) {
+    // The extra time already costs a whole hour; the next rise is past the next hour's grace.
+    minutesUntilNextCharge =
+      (completedHours + 1) * TIER_MINUTES + graceMinutes + 1 - billedMinutes;
+  } else {
+    minutesUntilNextCharge = 0;
+  }
+
+  return {
+    lineTotal,
+    blocksCharged: hoursCharged,
+    blockSubtotal: hourSubtotal,
+    overageMinutes: overtime?.minutes ?? 0,
+    overageAmount: overtime?.amount ?? 0,
+    graceApplied: completedHours >= 1 && remainder > 0 && !chargeable,
+    inExtraTime: chargeable,
+    minutesUntilNextCharge,
+    hourLines,
+    overtime,
+    rawTotal,
+    roundingAdjustment: lineTotal - rawTotal,
+  };
+}
+
+/**
+ * Prices a session under any pricing mode. **The only pricing entry point callers
  * should use** - the live quote, checkout, and both client-side previews all go through
  * it, so no caller anywhere branches on the mode itself.
  *
@@ -240,18 +409,32 @@ export function priceSession(
 ): SessionPriceBreakdown {
   const { pricingMode, unitPrice, rateDurationMinutes } = rate;
 
-  if (pricingMode !== SessionPricingMode.BLOCK_WITH_GRACE) {
-    return {
-      lineTotal: calculateSessionLineTotal({ unitPrice, rateDurationMinutes, billedMinutes }),
-      blocksCharged: 0,
-      blockSubtotal: 0,
-      overageMinutes: 0,
-      overageAmount: 0,
-      graceApplied: false,
-      inExtraTime: false,
-      // Every minute already costs something here, so there is no next step to count to.
-      minutesUntilNextCharge: null,
-    };
+  // An explicit switch, so a new mode can never fall through to pro-rata unnoticed.
+  switch (pricingMode) {
+    case SessionPricingMode.PRORATA: {
+      const lineTotal = calculateSessionLineTotal({ unitPrice, rateDurationMinutes, billedMinutes });
+      return {
+        lineTotal,
+        blocksCharged: 0,
+        blockSubtotal: 0,
+        overageMinutes: 0,
+        overageAmount: 0,
+        graceApplied: false,
+        inExtraTime: false,
+        // Every minute already costs something here, so there is no next step to count to.
+        minutesUntilNextCharge: null,
+        hourLines: [],
+        overtime: null,
+        rawTotal: lineTotal,
+        roundingAdjustment: 0,
+      };
+    }
+    case SessionPricingMode.TIERED_HOURLY:
+      return priceTieredSession(rate, billedMinutes);
+    case SessionPricingMode.BLOCK_WITH_GRACE:
+      break;
+    default:
+      throw new ValidationError(`Unknown pricing mode: ${String(pricingMode)}`);
   }
 
   // Same guards as the pro-rata path, applied before any arithmetic.
@@ -288,8 +471,10 @@ export function priceSession(
     (blocksCharged + 1) * rateDurationMinutes,
   );
 
+  const lineTotal = blockSubtotal + overageAmount;
+
   return {
-    lineTotal: blockSubtotal + overageAmount,
+    lineTotal,
     blocksCharged,
     blockSubtotal,
     overageMinutes: chargeable ? remainder : 0,
@@ -297,6 +482,10 @@ export function priceSession(
     graceApplied: completedBlocks >= 1 && remainder > 0 && !chargeable,
     inExtraTime: chargeable,
     minutesUntilNextCharge: chargeable ? 0 : Math.max(nextChargeAtMinute - billedMinutes, 0),
+    hourLines: [],
+    overtime: null,
+    rawTotal: lineTotal,
+    roundingAdjustment: 0,
   };
 }
 
@@ -310,7 +499,8 @@ export interface SessionPricing extends BilledDuration {
  * Both the live quote and the authoritative checkout go through this, so the two cannot
  * drift. It is also the single place that decides how `minimumBillableMinutes` is applied.
  *
- * **The minimum does not apply to BLOCK_WITH_GRACE.** The block fee already is the floor -
+ * **The minimum applies only to PRORATA.** Under BLOCK_WITH_GRACE and TIERED_HOURLY the
+ * first block or hour already is the floor -
  * a two-minute visit buys the whole first hour - so applying the minimum on top would
  * change nothing about the money while doing real damage elsewhere: `billedMinutes` is
  * stored on the session and on the bill item, and it is what the dashboard sums into
@@ -323,15 +513,69 @@ export function priceSessionForPeriod(params: {
   rate: SessionRateSnapshot;
   minimumBillableMinutes: number;
 }): SessionPricing {
-  const isBlockMode = params.rate.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE;
+  const appliesMinimum = params.rate.pricingMode === SessionPricingMode.PRORATA;
 
   const duration = calculateBilledMinutes({
     checkInAt: params.checkInAt,
     checkOutAt: params.checkOutAt,
-    minimumBillableMinutes: isBlockMode ? 0 : params.minimumBillableMinutes,
+    minimumBillableMinutes: appliesMinimum ? params.minimumBillableMinutes : 0,
   });
 
   return { ...duration, breakdown: priceSession(params.rate, duration.billedMinutes) };
+}
+
+/**
+ * When this bill's checkout happened - the moment a payment recorded after the fact is
+ * dated to.
+ *
+ * For a session bill that is the latest item `checkOutAt`: the "Time out" already on the
+ * bill and the receipt, and the instant the parent was quoted at. A flat bill has no
+ * checkout time, so it falls back to when the draft was created, which for a till bill is
+ * the same moment give or take a sync.
+ */
+export function checkoutTimeOf(bill: {
+  items: { checkOutAt?: Date | null; visitAt?: Date | null; visitMinutes?: number | null }[];
+  createdAt: Date;
+}): Date {
+  // A group line has no check-out, but its visit has an end, and that is the moment the
+  // group would have paid at the till.
+  const checkOutTimes = bill.items
+    .map((item) =>
+      item.checkOutAt
+        ? item.checkOutAt.getTime()
+        : item.visitAt
+          ? item.visitAt.getTime() + (item.visitMinutes ?? 0) * MILLISECONDS_PER_MINUTE
+          : undefined,
+    )
+    .filter((time): time is number => typeof time === 'number' && Number.isFinite(time));
+
+  return checkOutTimes.length ? new Date(Math.max(...checkOutTimes)) : bill.createdAt;
+}
+
+/**
+ * A group visit at a negotiated rate: `ratePerChildPerHour` buys one child one hour, and
+ * any other length is pro-rata from it - the same shape as a PRORATA play package, with
+ * the headcount as a multiplier. 20 children x LKR 300.00 x 2h -> LKR 12,000.00.
+ *
+ * Multiplied out before the single division, so the only rounding is the last step and a
+ * whole-hour visit is always exact.
+ */
+export function priceGroupVisit(params: {
+  ratePerChildPerHour: number;
+  headcount: number;
+  visitMinutes: number;
+}): number {
+  const { ratePerChildPerHour, headcount, visitMinutes } = params;
+  if (!Number.isInteger(ratePerChildPerHour) || ratePerChildPerHour < 0) {
+    throw new ValidationError('The group rate must be a whole number of minor units');
+  }
+  if (!Number.isInteger(headcount) || headcount < 1) {
+    throw new ValidationError('Headcount must be at least 1');
+  }
+  if (!Number.isInteger(visitMinutes) || visitMinutes < 1) {
+    throw new ValidationError('The visit must be at least a minute long');
+  }
+  return Math.round((ratePerChildPerHour * headcount * visitMinutes) / GROUP_RATE_MINUTES);
 }
 
 export interface BillTotals {

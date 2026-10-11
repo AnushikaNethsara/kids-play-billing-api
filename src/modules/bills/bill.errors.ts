@@ -15,3 +15,9 @@ export class InvalidPlayPackageError extends AppError {
     super(message, 422, 'INVALID_PLAY_PACKAGE');
   }
 }
+
+export class InvalidProductError extends AppError {
+  constructor(message = 'The selected product is not available') {
+    super(message, 422, 'INVALID_PRODUCT');
+  }
+}

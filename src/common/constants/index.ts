@@ -4,3 +4,4 @@ export { PaymentMethod } from './paymentMethods';
 export { PlaySessionStatus } from './sessionStatus';
 export { SessionPricingMode, DEFAULT_SESSION_PRICING_MODE } from './pricingModes';
 export { AuditAction, AuditEntityType } from './auditActions';
+export { BillItemKind, resolveItemKind } from './billItemKind';

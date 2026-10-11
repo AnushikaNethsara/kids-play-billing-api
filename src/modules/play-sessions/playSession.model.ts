@@ -3,7 +3,35 @@ import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import {
   DEFAULT_SESSION_PRICING_MODE,
   SessionPricingMode,
+  type TieredPricing,
 } from '../../common/constants/pricingModes';
+import {
+  resolveTieredPricing,
+  tieredPricingSchema,
+} from '../play-packages/tieredPricing.schema';
+
+/**
+ * A product sold onto a child who is playing - socks, typically handed over at the gate.
+ * Charged at checkout as a PRODUCT line on the session's bill rather than as a bill of its
+ * own, because the money is taken once, when the family leaves.
+ *
+ * The name and price are snapshotted when the extra is added, the same rule as the play
+ * rate: a price edit mid-visit never changes what this child's socks cost.
+ */
+export interface PlaySessionExtraSubdocument {
+  /**
+   * Generated on the device that added the extra. The idempotency key for a retried sync:
+   * an add whose `localId` is already on the session is a no-op, not a second pair.
+   */
+  localId: string;
+  productId: Types.ObjectId;
+  productName: string;
+  unitPrice: number;
+  quantity: number;
+  addedAt: Date;
+  addedByCashierId: Types.ObjectId;
+  addedByCashierName: string;
+}
 
 export interface PlaySessionDocument {
   /**
@@ -13,7 +41,23 @@ export interface PlaySessionDocument {
    */
   ticketCode: string;
   status: PlaySessionStatus;
+  /**
+   * Display form of the children on this ticket - the one name, or the names joined
+   * with ", " on a family ticket. Kept so every consumer that predates family tickets
+   * (reports, CSVs, search, receipts) still reads something sensible.
+   */
   childName: string;
+  /**
+   * The children on a family ticket, one name each. Empty on tickets created before
+   * family tickets existed; read through `resolveChildNames`.
+   */
+  childNames: string[];
+  /**
+   * How many children this ticket covers. Every child is on the same package and leaves
+   * together, so the ticket is charged one child's price times this. Absent on older
+   * tickets; read through `resolveChildCount`.
+   */
+  childCount: number;
 
   // Rate snapshot, taken at check-in. A later price change must never rewrite what an
   // already-playing child is charged - same discipline as BillItemSubdocument. These five
@@ -30,6 +74,8 @@ export interface PlaySessionDocument {
   pricingMode: SessionPricingMode;
   /** Always 0 on a PRORATA session, where grace means nothing. */
   graceMinutes: number;
+  /** The hourly rates, overtime and rounding. Set only on a TIERED_HOURLY session. */
+  tieredPricing: TieredPricing | null;
 
   customerId: Types.ObjectId | null;
   parentName: string;
@@ -65,6 +111,9 @@ export interface PlaySessionDocument {
   voidedBy: Types.ObjectId | null;
   voidReason: string | null;
 
+  /** Products sold onto this visit, billed at checkout. Absent on older sessions. */
+  extras: PlaySessionExtraSubdocument[];
+
   /**
    * Mirrors `isTestBill` on the bill this session was checked out into. The session
    * metrics on the dashboard (play hours, occupancy, revenue per play hour) read this
@@ -80,6 +129,20 @@ export interface PlaySessionDocument {
 
 export type PlaySessionHydrated = HydratedDocument<PlaySessionDocument>;
 
+const playSessionExtraSchema = new Schema<PlaySessionExtraSubdocument>(
+  {
+    localId: { type: String, required: true },
+    productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
+    productName: { type: String, required: true },
+    unitPrice: { type: Number, required: true, min: 0 },
+    quantity: { type: Number, required: true, min: 1 },
+    addedAt: { type: Date, required: true },
+    addedByCashierId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    addedByCashierName: { type: String, required: true },
+  },
+  { _id: false },
+);
+
 const playSessionSchema = new Schema<PlaySessionDocument>(
   {
     ticketCode: { type: String, required: true, trim: true },
@@ -89,6 +152,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
       default: PlaySessionStatus.ACTIVE,
     },
     childName: { type: String, required: true, trim: true },
+    childNames: { type: [String], default: [] },
+    childCount: { type: Number, default: 1, min: 1 },
 
     playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', required: true },
     packageName: { type: String, required: true },
@@ -100,6 +165,7 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
       default: DEFAULT_SESSION_PRICING_MODE,
     },
     graceMinutes: { type: Number, default: 0, min: 0 },
+    tieredPricing: { type: tieredPricingSchema, default: null },
 
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', default: null },
     parentName: { type: String, default: '' },
@@ -121,6 +187,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     voidedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     voidReason: { type: String, default: null },
 
+    extras: { type: [playSessionExtraSchema], default: [] },
+
     isTestBill: { type: Boolean, default: false },
   },
   { timestamps: true },
@@ -132,7 +200,7 @@ playSessionSchema.index({ ticketCode: 1 }, { unique: true });
 // The "currently playing" board - the most frequently run query in the system.
 playSessionSchema.index({ status: 1, checkInAt: -1 });
 // Finding a family's ticket when the printed slip has been lost.
-playSessionSchema.index({ phoneNumber: 1 });
+playSessionSchema.index({ phoneNumber: 1, checkInAt: -1 });
 // Session history listings.
 playSessionSchema.index({ checkInAt: -1 });
 // Reopening sessions when their bill is cancelled.
@@ -147,17 +215,25 @@ playSessionSchema.index({ billId: 1 });
  */
 export function resolveSessionRate(
   session: Pick<PlaySessionDocument, 'unitPrice' | 'rateDurationMinutes'> &
-    Partial<Pick<PlaySessionDocument, 'pricingMode' | 'graceMinutes'>>,
+    Partial<Pick<PlaySessionDocument, 'pricingMode' | 'graceMinutes' | 'tieredPricing'>>,
 ): {
   pricingMode: SessionPricingMode;
   unitPrice: number;
   rateDurationMinutes: number;
   graceMinutes: number;
+  tieredPricing: TieredPricing | null;
 } {
-  const pricingMode =
-    session.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
-      ? SessionPricingMode.BLOCK_WITH_GRACE
-      : DEFAULT_SESSION_PRICING_MODE;
+  const tieredPricing = resolveTieredPricing(session);
+  let pricingMode: SessionPricingMode = DEFAULT_SESSION_PRICING_MODE;
+  if (session.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE) {
+    pricingMode = SessionPricingMode.BLOCK_WITH_GRACE;
+  } else if (session.pricingMode === SessionPricingMode.TIERED_HOURLY && tieredPricing) {
+    // A tiered session without its rates cannot be priced as tiered. Validation never lets
+    // one be saved; if one appears anyway, it prices pro-rata at the 1st-hour rate.
+    pricingMode = SessionPricingMode.TIERED_HOURLY;
+  }
+
+  const hasGrace = pricingMode !== SessionPricingMode.PRORATA;
 
   return {
     pricingMode,
@@ -165,10 +241,31 @@ export function resolveSessionRate(
     rateDurationMinutes: session.rateDurationMinutes,
     // Grace is meaningless under PRORATA, so it is never carried into one.
     graceMinutes:
-      pricingMode === SessionPricingMode.BLOCK_WITH_GRACE && Number.isFinite(session.graceMinutes)
+      hasGrace && Number.isFinite(session.graceMinutes)
         ? Math.max(session.graceMinutes as number, 0)
         : 0,
+    tieredPricing: pricingMode === SessionPricingMode.TIERED_HOURLY ? tieredPricing : null,
   };
+}
+
+/**
+ * How many children a ticket covers. Read defensively for the same reason as
+ * `resolveSessionRate`: a `.lean()` read of a ticket from before family tickets has no
+ * such key, and it was always one child.
+ */
+export function resolveChildCount(session: { childCount?: number | null }): number {
+  const count = session.childCount;
+  return typeof count === 'number' && Number.isInteger(count) && count >= 1 ? count : 1;
+}
+
+/** The children on a ticket, one name each. Older tickets carry only `childName`. */
+export function resolveChildNames(session: { childName: string; childNames?: string[] | null }): string[] {
+  return session.childNames?.length ? session.childNames : [session.childName];
+}
+
+/** What the extras on a session add up to. Tolerates sessions predating extras. */
+export function sumSessionExtras(session: { extras?: PlaySessionExtraSubdocument[] | null }): number {
+  return (session.extras ?? []).reduce((sum, extra) => sum + extra.unitPrice * extra.quantity, 0);
 }
 
 export const PlaySessionModel = model<PlaySessionDocument>('PlaySession', playSessionSchema);

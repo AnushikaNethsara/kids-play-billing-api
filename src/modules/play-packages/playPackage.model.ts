@@ -2,13 +2,17 @@ import { Schema, model, type HydratedDocument, Types } from 'mongoose';
 import {
   DEFAULT_SESSION_PRICING_MODE,
   SessionPricingMode,
+  type TieredPricing,
 } from '../../common/constants/pricingModes';
+import { tieredPricingSchema } from './tieredPricing.schema';
 
 export interface PlayPackageDocument {
   name: string;
   /**
    * Under PRORATA this is the rate denominator: `price` buys this many minutes. Under
    * BLOCK_WITH_GRACE it is the block length: each started block costs `price` in full.
+   * Under TIERED_HOURLY it is always 60, and `price` mirrors the 1st hour's rate, so lists
+   * and older clients still show a sensible "from" price.
    */
   durationMinutes: number;
   price: number;
@@ -19,10 +23,15 @@ export interface PlayPackageDocument {
   pricingMode: SessionPricingMode;
   /**
    * Minutes of overrun forgiven after each completed block before the next charge starts.
-   * BLOCK_WITH_GRACE only; kept on the package while the mode is PRORATA so flipping the
-   * mode back does not lose the value.
+   * BLOCK_WITH_GRACE and TIERED_HOURLY only; kept on the package while the mode is PRORATA
+   * so flipping the mode back does not lose the value.
    */
   graceMinutes: number;
+  /**
+   * The hourly rates, overtime and rounding of a TIERED_HOURLY package. Null on every other
+   * package; like `graceMinutes` it is kept when the mode changes away and back.
+   */
+  tieredPricing: TieredPricing | null;
   isActive: boolean;
   description: string;
   sortOrder: number;
@@ -46,6 +55,7 @@ const playPackageSchema = new Schema<PlayPackageDocument>(
       default: DEFAULT_SESSION_PRICING_MODE,
     },
     graceMinutes: { type: Number, default: 0, min: 0 },
+    tieredPricing: { type: tieredPricingSchema, default: null },
     isActive: { type: Boolean, default: true },
     description: { type: String, default: '' },
     sortOrder: { type: Number, default: 0 },
@@ -67,9 +77,13 @@ playPackageSchema.index({ isActive: 1, sortOrder: 1 });
 export function resolvePricingMode(
   pkg: Partial<Pick<PlayPackageDocument, 'pricingMode'>>,
 ): SessionPricingMode {
-  return pkg.pricingMode === SessionPricingMode.BLOCK_WITH_GRACE
-    ? SessionPricingMode.BLOCK_WITH_GRACE
-    : DEFAULT_SESSION_PRICING_MODE;
+  switch (pkg.pricingMode) {
+    case SessionPricingMode.BLOCK_WITH_GRACE:
+    case SessionPricingMode.TIERED_HOURLY:
+      return pkg.pricingMode;
+    default:
+      return DEFAULT_SESSION_PRICING_MODE;
+  }
 }
 
 export function resolveGraceMinutes(

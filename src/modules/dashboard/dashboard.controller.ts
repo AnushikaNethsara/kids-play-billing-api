@@ -24,6 +24,11 @@ export const dashboardController = {
     sendSuccess(res, packages);
   },
 
+  async products(req: Request, res: Response): Promise<void> {
+    const products = await dashboardService.getProductPerformance(req.query as unknown as DashboardQuery);
+    sendSuccess(res, products);
+  },
+
   async paymentMethods(req: Request, res: Response): Promise<void> {
     const breakdown = await dashboardService.getPaymentMethodBreakdown(
       req.query as unknown as DashboardQuery,

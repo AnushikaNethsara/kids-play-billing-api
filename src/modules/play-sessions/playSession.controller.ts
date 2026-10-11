@@ -2,7 +2,12 @@ import type { Request, Response } from 'express';
 import { playSessionService } from './playSession.service';
 import { sendSuccess } from '../../common/utils/apiResponse';
 import { AuthenticationError } from '../../common/errors';
-import type { CheckInInput, ListPlaySessionsQuery, VoidSessionInput } from './playSession.types';
+import type {
+  AddSessionExtrasInput,
+  CheckInInput,
+  ListPlaySessionsQuery,
+  VoidSessionInput,
+} from './playSession.types';
 
 function requireActor(req: Request) {
   if (!req.user) throw new AuthenticationError();
@@ -33,6 +38,28 @@ export const playSessionController = {
   async getById(req: Request, res: Response): Promise<void> {
     const result = await playSessionService.getPublicById(req.params.id);
     sendSuccess(res, result);
+  },
+
+  async addExtras(req: Request, res: Response): Promise<void> {
+    const actor = requireActor(req);
+    const session = await playSessionService.addExtras(
+      req.params.ticketCode,
+      req.body as AddSessionExtrasInput,
+      actor,
+    );
+    sendSuccess(res, session, { message: 'Items added to the ticket' });
+  },
+
+  async removeExtra(req: Request, res: Response): Promise<void> {
+    const actor = requireActor(req);
+    const { reason } = (req.body ?? {}) as { reason?: string };
+    const session = await playSessionService.removeExtra(
+      req.params.ticketCode,
+      req.params.localId,
+      reason,
+      actor,
+    );
+    sendSuccess(res, session, { message: 'Item removed from the ticket' });
   },
 
   async void(req: Request, res: Response): Promise<void> {

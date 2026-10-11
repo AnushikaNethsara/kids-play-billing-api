@@ -1,5 +1,7 @@
 import type { Model } from 'mongoose';
 import { BillModel } from '../modules/bills/bill.model';
+import { CustomerModel } from '../modules/customers/customer.model';
+import { PlaySessionModel } from '../modules/play-sessions/playSession.model';
 import { logger } from '../common/logger/logger';
 
 /**
@@ -31,6 +33,28 @@ const STALE_INDEXES: {
     // app as a 500 on POST /bills and POST /bills/from-sessions.
     isStale: (index) => !index.partialFilterExpression,
     reason: 'unique+sparse billNumber index rejects a second unpaid draft',
+  },
+  {
+    model: BillModel as unknown as Model<never>,
+    name: 'phoneNumber_1',
+    // Replaced by `{ phoneNumber: 1, paidAt: -1 }`, which serves the same lookups and a
+    // family's bills in date order. Any index still carrying this name is the old one.
+    isStale: () => true,
+    reason: 'superseded by phoneNumber_1_paidAt_-1',
+  },
+  {
+    model: PlaySessionModel as unknown as Model<never>,
+    name: 'phoneNumber_1',
+    isStale: () => true,
+    reason: 'superseded by phoneNumber_1_checkInAt_-1',
+  },
+  {
+    model: CustomerModel as unknown as Model<never>,
+    name: 'phoneNumber_1',
+    // Now unique (partial on a non-empty number): one customer per family. It cannot be
+    // built while duplicates remain - run `npm run customers:cleanup -- --apply` first.
+    isStale: (index) => !index.unique,
+    reason: 'customer phone index is now unique',
   },
 ];
 
@@ -69,6 +93,16 @@ export async function ensureIndexes(): Promise<void> {
   // rather than left to Mongoose's background autoIndex, so a failure is visible in the
   // startup logs instead of silently leaving the collection without its index.
   for (const model of new Set(STALE_INDEXES.map((stale) => stale.model))) {
-    await model.createIndexes();
+    try {
+      await model.createIndexes();
+    } catch (err) {
+      // Most likely the unique customer phone index meeting duplicates the cleanup script
+      // has not merged yet. Logged loudly rather than thrown: the server must still come
+      // up, and every other index on the model is built independently of this one.
+      logger.error(
+        { err, collection: model.collection.collectionName },
+        'Could not build an index - run `npm run customers:cleanup` if this is customers.phoneNumber',
+      );
+    }
   }
 }

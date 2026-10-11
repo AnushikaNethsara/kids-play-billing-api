@@ -3,21 +3,49 @@ import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import {
   DEFAULT_SESSION_PRICING_MODE,
   SessionPricingMode,
+  type TieredPricing,
 } from '../../common/constants/pricingModes';
+import { tieredPricingSchema } from '../play-packages/tieredPricing.schema';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { BillItemKind } from '../../common/constants/billItemKind';
 
 export interface BillItemSubdocument {
+  /**
+   * What the line is for - see BillItemKind. Absent on every line written before kinds
+   * existed, all of which were PLAY lines; read it through `resolveItemKind`, never raw.
+   */
+  kind: BillItemKind;
+  /**
+   * The child on a PLAY line. On a PRODUCT line sold onto a play session, the child it was
+   * for; otherwise empty. Unused on a GROUP line, which names the group in `packageName`.
+   */
   childName: string;
-  playPackageId: Types.ObjectId;
+  /** Set on PLAY lines only. */
+  playPackageId: Types.ObjectId | null;
+  /**
+   * The line's printed name, snapshotted: the package on a PLAY line, the product on a
+   * PRODUCT line, and the group (the pre-school's name) on a GROUP line.
+   */
   packageName: string;
   /**
    * For a session-billed item this is the RATE denominator: `unitPrice` buys this many
-   * minutes. For legacy flat-price items it is descriptive only.
+   * minutes. For legacy flat-price items it is descriptive only. On a GROUP line it is
+   * always GROUP_RATE_MINUTES (the rate is per child per hour); 0 on a PRODUCT line.
    */
   durationMinutes: number;
   unitPrice: number;
+  /** Units on a flat line, the headcount on a GROUP line, meaningless on a session line. */
   quantity: number;
   lineTotal: number;
+
+  /** PRODUCT lines only: the product sold. */
+  productId: Types.ObjectId | null;
+  /**
+   * GROUP lines only: when the visit started and how long it lasted. `visitMinutes` is the
+   * time charged for, not the rate denominator - that stays in `durationMinutes`.
+   */
+  visitAt: Date | null;
+  visitMinutes: number | null;
 
   /**
    * Set only on items billed from a timed play session. Null on bills created through
@@ -33,7 +61,7 @@ export interface BillItemSubdocument {
   /**
    * The pricing rule this line was billed under, snapshotted with the rate.
    *
-   * Only these two inputs are stored, not the resulting split: `lineTotal` stays the sole
+   * Only these inputs are stored, not the resulting split: `lineTotal` stays the sole
    * authority on the money, and a stored split that disagreed with it would be a new way
    * for a bill to contradict itself. Because every input is snapshotted, the split is
    * reproduced exactly whenever it is needed for display - see `toPublicItem`.
@@ -42,6 +70,11 @@ export interface BillItemSubdocument {
    */
   pricingMode: SessionPricingMode;
   graceMinutes: number;
+  /**
+   * The hourly rates, overtime and rounding of a TIERED_HOURLY line. Null on every other
+   * line. `lineTotal` already includes the rounding.
+   */
+  tieredPricing: TieredPricing | null;
 }
 
 export interface BillDocument {
@@ -72,6 +105,17 @@ export interface BillDocument {
   refundReason: string | null;
 
   /**
+   * Set only when an admin recorded the payment after the fact, dated to the checkout
+   * time - the recovery path for a till checkout that was abandoned before payment.
+   * `paidAt` (and so the bill number and the day the revenue counts on) is the checkout
+   * time; these record when the payment was actually entered, and by whom, so the gap is
+   * visible on the bill itself and not only in the audit log. Null on a normal payment.
+   */
+  paymentRecordedAt: Date | null;
+  paymentRecordedBy: Types.ObjectId | null;
+  paymentRecordedByName: string | null;
+
+  /**
    * Marks a bill that was rung up to try the system out rather than to take money from a
    * customer - a staff training run, a printer check, a demo. The bill itself is left
    * completely intact (it keeps its bill number, its receipt and its place in the list),
@@ -95,8 +139,11 @@ export type BillHydrated = HydratedDocument<BillDocument>;
 
 const billItemSchema = new Schema<BillItemSubdocument>(
   {
-    childName: { type: String, required: true, trim: true },
-    playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', required: true },
+    kind: { type: String, enum: Object.values(BillItemKind), default: BillItemKind.PLAY },
+    // Not `required`: Mongoose rejects an empty string on a required String, and a product
+    // sold over the counter has no child.
+    childName: { type: String, default: '', trim: true },
+    playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', default: null },
     // Snapshotted at billing time - historical reports must never recompute using the
     // package's current price, since prices change over time.
     packageName: { type: String, required: true },
@@ -104,6 +151,9 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     unitPrice: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1, default: 1 },
     lineTotal: { type: Number, required: true },
+    productId: { type: Schema.Types.ObjectId, ref: 'Product', default: null },
+    visitAt: { type: Date, default: null },
+    visitMinutes: { type: Number, default: null },
     playSessionId: { type: Schema.Types.ObjectId, ref: 'PlaySession', default: null },
     checkInAt: { type: Date, default: null },
     checkOutAt: { type: Date, default: null },
@@ -114,6 +164,7 @@ const billItemSchema = new Schema<BillItemSubdocument>(
       default: DEFAULT_SESSION_PRICING_MODE,
     },
     graceMinutes: { type: Number, default: 0 },
+    tieredPricing: { type: tieredPricingSchema, default: null },
   },
   { _id: false },
 );
@@ -150,6 +201,10 @@ const billSchema = new Schema<BillDocument>(
     refundedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     refundReason: { type: String, default: null },
 
+    paymentRecordedAt: { type: Date, default: null },
+    paymentRecordedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    paymentRecordedByName: { type: String, default: null },
+
     isTestBill: { type: Boolean, default: false },
     testMarkedAt: { type: Date, default: null },
     testMarkedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
@@ -180,7 +235,8 @@ billSchema.index({ status: 1, paidAt: -1 });
 // Cashier performance reports filter by cashier + paidAt range.
 billSchema.index({ cashierId: 1, paidAt: -1 });
 // Customer's phone number lookup on the bill list/search screen.
-billSchema.index({ phoneNumber: 1 });
+// A family's bills, newest first: the customer profile, its visits and its counters.
+billSchema.index({ phoneNumber: 1, paidAt: -1 });
 // Default bill listing sort/filter by creation date.
 billSchema.index({ createdAt: -1 });
 // Payment-method breakdown reports.
@@ -189,5 +245,8 @@ billSchema.index({ paymentMethod: 1, paidAt: -1 });
 // flag leads this index rather than trailing the revenue one - almost all bills are
 // real, which makes it the cheapest discriminator to apply first.
 billSchema.index({ isTestBill: 1, status: 1, paidAt: -1 });
+// The bills list's kind filter, and the product delete check.
+billSchema.index({ 'items.kind': 1 });
+billSchema.index({ 'items.productId': 1 });
 
 export const BillModel = model<BillDocument>('Bill', billSchema);

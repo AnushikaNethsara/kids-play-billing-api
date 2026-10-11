@@ -5,15 +5,24 @@ import {
   resolvePricingMode,
   type PlayPackageHydrated,
 } from './playPackage.model';
+import { resolveTieredPricing } from './tieredPricing.schema';
 import { assertPricingConsistent } from './playPackage.validation';
-import { DEFAULT_SESSION_PRICING_MODE } from '../../common/constants/pricingModes';
+import {
+  DEFAULT_SESSION_PRICING_MODE,
+  RoundingMode,
+  SessionPricingMode,
+  TIER_MINUTES,
+  type TieredPricing,
+} from '../../common/constants/pricingModes';
+import { env } from '../../config';
 import type {
+  TieredPricingInput,
   CreatePlayPackageInput,
   UpdatePlayPackageInput,
   ListPlayPackagesQuery,
   PlayPackagePublic,
 } from './playPackage.types';
-import { NotFoundError } from '../../common/errors';
+import { NotFoundError, ValidationError } from '../../common/errors';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
 import { buildPaginationMeta } from '../../common/utils/pagination';
@@ -28,12 +37,41 @@ function toPublic(pkg: PlayPackageHydrated): PlayPackagePublic {
     price: pkg.price,
     pricingMode: resolvePricingMode(pkg),
     graceMinutes: resolveGraceMinutes(pkg),
+    tieredPricing: resolveTieredPricing(pkg),
     isActive: pkg.isActive,
     description: pkg.description,
     sortOrder: pkg.sortOrder,
     createdAt: pkg.createdAt,
     updatedAt: pkg.updatedAt,
   };
+}
+
+/** Fills in the defaults a client may leave out of a tiered config. */
+function normaliseTieredPricing(input: TieredPricingInput): TieredPricing {
+  return {
+    hourlyRates: [...input.hourlyRates],
+    overtimeMode: input.overtimeMode,
+    overtimeBlockMinutes: input.overtimeBlockMinutes ?? 15,
+    roundingStep: input.roundingStep ?? 0,
+    roundingMode: input.roundingMode ?? RoundingMode.NEAREST,
+  };
+}
+
+function sameTieredPricing(a: TieredPricing | null, b: TieredPricing | null): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Tiered packages stay switched off until every cashier device runs a build that can
+ * price them. An older app would show a pro-rata running total for a tiered session.
+ * The charge would still be right, because the server prices it, but the screen would not.
+ */
+function assertTieredPricingEnabled(pricingMode: SessionPricingMode): void {
+  if (pricingMode === SessionPricingMode.TIERED_HOURLY && !env.tieredPricingEnabled) {
+    throw new ValidationError(
+      'Tiered hourly packages are not enabled yet. Set TIERED_PRICING_ENABLED=true once every cashier device is updated.',
+    );
+  }
 }
 
 async function isPackageUsedInBills(packageId: string): Promise<boolean> {
@@ -44,15 +82,24 @@ async function isPackageUsedInBills(packageId: string): Promise<boolean> {
 export const playPackageService = {
   async create(input: CreatePlayPackageInput, actor: AuthenticatedUser): Promise<PlayPackagePublic> {
     const pricingMode = input.pricingMode ?? DEFAULT_SESSION_PRICING_MODE;
+    assertTieredPricingEnabled(pricingMode);
     const graceMinutes = input.graceMinutes ?? 0;
-    assertPricingConsistent({ pricingMode, durationMinutes: input.durationMinutes, graceMinutes });
+    const tieredPricing = input.tieredPricing ? normaliseTieredPricing(input.tieredPricing) : null;
+    const isTiered = pricingMode === SessionPricingMode.TIERED_HOURLY;
+
+    // A tiered package's duration and price are derived, so lists and older clients see
+    // an hourly package priced "from" its 1st-hour rate.
+    const durationMinutes = isTiered ? TIER_MINUTES : (input.durationMinutes as number);
+    const price = isTiered && tieredPricing ? tieredPricing.hourlyRates[0] : (input.price as number);
+    assertPricingConsistent({ pricingMode, durationMinutes, graceMinutes, tieredPricing });
 
     const pkg = await playPackageRepository.create({
       name: input.name,
-      durationMinutes: input.durationMinutes,
-      price: input.price,
+      durationMinutes,
+      price,
       pricingMode,
       graceMinutes,
+      tieredPricing,
       description: input.description ?? '',
       sortOrder: input.sortOrder ?? 0,
       createdBy: actor.id,
@@ -106,18 +153,35 @@ export const playPackageService = {
     // Everything that moves what a visit costs is a price change, not a routine edit.
     // `durationMinutes` always was one - it is the rate denominator - but was only ever
     // logged as PACKAGE_UPDATED; the pricing mode and the grace are the same kind of
-    // change, so all four are audited together now.
+    // change, so all of them are audited together now, tiered rates included.
+    const nextTieredPricing = input.tieredPricing
+      ? normaliseTieredPricing(input.tieredPricing)
+      : undefined;
     const pricingChanged =
       (input.price !== undefined && input.price !== pkg.price) ||
       (input.durationMinutes !== undefined && input.durationMinutes !== pkg.durationMinutes) ||
       (input.pricingMode !== undefined && input.pricingMode !== resolvePricingMode(pkg)) ||
-      (input.graceMinutes !== undefined && input.graceMinutes !== resolveGraceMinutes(pkg));
+      (input.graceMinutes !== undefined && input.graceMinutes !== resolveGraceMinutes(pkg)) ||
+      (nextTieredPricing !== undefined &&
+        !sameTieredPricing(nextTieredPricing, resolveTieredPricing(pkg)));
+
+    if (input.pricingMode !== undefined && input.pricingMode !== resolvePricingMode(pkg)) {
+      assertTieredPricingEnabled(input.pricingMode);
+    }
 
     if (input.name !== undefined) pkg.name = input.name;
     if (input.durationMinutes !== undefined) pkg.durationMinutes = input.durationMinutes;
     if (input.price !== undefined) pkg.price = input.price;
     if (input.pricingMode !== undefined) pkg.pricingMode = input.pricingMode;
     if (input.graceMinutes !== undefined) pkg.graceMinutes = input.graceMinutes;
+    if (nextTieredPricing !== undefined) pkg.tieredPricing = nextTieredPricing;
+
+    // Keep the derived fields of a tiered package in step with its tiers.
+    const mergedTiered = resolveTieredPricing(pkg);
+    if (resolvePricingMode(pkg) === SessionPricingMode.TIERED_HOURLY && mergedTiered) {
+      pkg.durationMinutes = TIER_MINUTES;
+      pkg.price = mergedTiered.hourlyRates[0];
+    }
     if (input.description !== undefined) pkg.description = input.description;
     if (input.sortOrder !== undefined) pkg.sortOrder = input.sortOrder;
     pkg.updatedBy = new Types.ObjectId(actor.id);
@@ -128,6 +192,7 @@ export const playPackageService = {
       pricingMode: resolvePricingMode(pkg),
       durationMinutes: pkg.durationMinutes,
       graceMinutes: resolveGraceMinutes(pkg),
+      tieredPricing: mergedTiered,
     });
 
     await pkg.save();

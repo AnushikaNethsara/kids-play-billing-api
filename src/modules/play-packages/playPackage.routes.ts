@@ -29,11 +29,46 @@ router.use(authenticate);
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name, durationMinutes, price]
+ *             required: [name]
  *             properties:
  *               name: { type: string, example: "1 Hour" }
- *               durationMinutes: { type: integer, example: 60 }
- *               price: { type: integer, example: 80000, description: "Integer minor units (LKR cents)" }
+ *               durationMinutes:
+ *                 type: integer
+ *                 example: 60
+ *                 description: Required except under TIERED_HOURLY, where it is always 60.
+ *               price:
+ *                 type: integer
+ *                 example: 80000
+ *                 description: Integer minor units (LKR cents). Required except under TIERED_HOURLY, where it is the 1st hour's rate.
+ *               pricingMode:
+ *                 type: string
+ *                 enum: [PRORATA, BLOCK_WITH_GRACE, TIERED_HOURLY]
+ *                 default: PRORATA
+ *                 description: TIERED_HOURLY is rejected while TIERED_PRICING_ENABLED is off.
+ *               graceMinutes:
+ *                 type: integer
+ *                 example: 10
+ *                 description: Minutes forgiven after each completed block or hour. Ignored under PRORATA.
+ *               tieredPricing:
+ *                 type: object
+ *                 description: Required under TIERED_HOURLY.
+ *                 required: [hourlyRates, overtimeMode]
+ *                 properties:
+ *                   hourlyRates:
+ *                     type: array
+ *                     minItems: 4
+ *                     maxItems: 4
+ *                     items: { type: integer }
+ *                     example: [60000, 50000, 40000, 40000]
+ *                     description: 1st, 2nd and 3rd hour rates, then the rate repeated from the 4th hour on. Minor units.
+ *                   overtimeMode: { type: string, enum: [PER_MINUTE, BLOCK] }
+ *                   overtimeBlockMinutes: { type: integer, minimum: 1, maximum: 60, default: 15 }
+ *                   roundingStep:
+ *                     type: integer
+ *                     enum: [0, 100, 1000, 5000, 10000]
+ *                     default: 0
+ *                     description: Rounds the session total to this many minor units. 0 means no rounding.
+ *                   roundingMode: { type: string, enum: [UP, DOWN, NEAREST], default: NEAREST }
  *               description: { type: string }
  *               sortOrder: { type: integer }
  *     responses:

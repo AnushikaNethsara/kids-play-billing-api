@@ -1,8 +1,15 @@
 import { Types } from 'mongoose';
-import { PlaySessionModel, type PlaySessionDocument, type PlaySessionHydrated } from './playSession.model';
+import {
+  PlaySessionModel,
+  type PlaySessionDocument,
+  type PlaySessionExtraSubdocument,
+  type PlaySessionHydrated,
+} from './playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { getSkip } from '../../common/utils/pagination';
 import { escapeRegExp } from '../../common/utils/regex';
+import { phoneSearchDigits } from '../../common/utils/phone';
+import { EXCLUDE_TEST_SESSIONS, SESSION_CHILD_NAMES } from '../../common/reporting/billFilters';
 import type { ListPlaySessionsQuery } from './playSession.types';
 
 const SORT_OPTIONS: Record<NonNullable<ListPlaySessionsQuery['sort']>, Record<string, 1 | -1>> = {
@@ -77,8 +84,42 @@ export const playSessionRepository = {
     ).exec();
   },
 
+  /**
+   * Adds one extra, compare-and-set twice over: the session must still be ACTIVE (an
+   * extra added after checkout would never be billed), and must not already carry this
+   * `localId` (a retried sync must not sell the same pair twice). Null when either fails;
+   * the caller reads the session back to tell which.
+   */
+  async addExtraIfActive(
+    ticketCode: string,
+    extra: PlaySessionExtraSubdocument,
+  ): Promise<PlaySessionHydrated | null> {
+    return PlaySessionModel.findOneAndUpdate(
+      { ticketCode, status: PlaySessionStatus.ACTIVE, 'extras.localId': { $ne: extra.localId } },
+      { $push: { extras: extra } },
+      { new: true },
+    ).exec();
+  },
+
+  /** Only while ACTIVE: once checked out, the extra is on a bill and stays there. */
+  async removeExtraIfActive(ticketCode: string, localId: string): Promise<PlaySessionHydrated | null> {
+    return PlaySessionModel.findOneAndUpdate(
+      { ticketCode, status: PlaySessionStatus.ACTIVE, 'extras.localId': localId },
+      { $pull: { extras: { localId } } },
+      { new: true },
+    ).exec();
+  },
+
   async setBillId(sessionId: Types.ObjectId | string, billId: Types.ObjectId): Promise<void> {
     await PlaySessionModel.updateOne({ _id: sessionId }, { $set: { billId } }).exec();
+  },
+
+  /** Links the tickets a bill paid for to its customer, where the cashier did not pick one. */
+  async setCustomerIdByBillId(billId: Types.ObjectId | string, customerId: string): Promise<void> {
+    await PlaySessionModel.updateMany(
+      { billId: new Types.ObjectId(billId), customerId: null },
+      { $set: { customerId: new Types.ObjectId(customerId) } },
+    ).exec();
   },
 
   /**
@@ -117,9 +158,19 @@ export const playSessionRepository = {
     phoneNumber: string,
   ): Promise<{ childName: string; lastCheckInAt: Date }[]> {
     const rows = await PlaySessionModel.aggregate<{ childName: string; lastCheckInAt: Date }>([
-      { $match: { phoneNumber } },
+      // A test check-in's child is usually made up, so it is not offered as a real one.
+      { $match: { phoneNumber, ...EXCLUDE_TEST_SESSIONS } },
+      // One row per child: a family ticket carries several names, and grouping its joined
+      // display name would offer "Amal, Nimal, Sara" as a single child to pick.
+      {
+        $project: {
+          checkInAt: 1,
+          name: SESSION_CHILD_NAMES,
+        },
+      },
+      { $unwind: '$name' },
       { $sort: { checkInAt: -1 } },
-      { $group: { _id: '$childName', lastCheckInAt: { $first: '$checkInAt' } } },
+      { $group: { _id: '$name', lastCheckInAt: { $first: '$checkInAt' } } },
       { $sort: { lastCheckInAt: -1 } },
       { $project: { _id: 0, childName: '$_id', lastCheckInAt: 1 } },
     ]).exec();
@@ -131,7 +182,8 @@ export const playSessionRepository = {
 
     if (filter.status) mongoFilter.status = filter.status;
     if (filter.phoneNumber) {
-      mongoFilter.phoneNumber = { $regex: escapeRegExp(filter.phoneNumber), $options: 'i' };
+      // Stored normalised; matched on the digits typed, wherever they fall in the number.
+      mongoFilter.phoneNumber = { $regex: escapeRegExp(phoneSearchDigits(filter.phoneNumber)) };
     }
     if (filter.childName) {
       mongoFilter.childName = { $regex: escapeRegExp(filter.childName), $options: 'i' };

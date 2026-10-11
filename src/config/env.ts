@@ -19,6 +19,9 @@ const envSchema = z.object({
   BUSINESS_TIMEZONE: z.string().default('Asia/Colombo'),
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+
+  // Off until every cashier device runs a build that can price TIERED_HOURLY packages.
+  TIERED_PRICING_ENABLED: z.enum(['true', 'false']).default('false'),
 });
 
 function loadEnv() {
@@ -40,5 +43,6 @@ export const env = {
   isProduction: parsedEnv.NODE_ENV === 'production',
   isTest: parsedEnv.NODE_ENV === 'test',
   isDevelopment: parsedEnv.NODE_ENV === 'development',
+  tieredPricingEnabled: parsedEnv.TIERED_PRICING_ENABLED === 'true',
   corsOrigins: parsedEnv.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
 };

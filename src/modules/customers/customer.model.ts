@@ -8,6 +8,7 @@ export interface CustomerDocument {
   visitCount: number;
   totalSpent: number;
   lastVisitAt: Date | null;
+  firstVisitAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -24,6 +25,7 @@ const customerSchema = new Schema<CustomerDocument>(
     // Integer minor units (LKR cents).
     totalSpent: { type: Number, default: 0 },
     lastVisitAt: { type: Date, default: null },
+    firstVisitAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
@@ -36,5 +38,11 @@ customerSchema.index(
   { phoneNumber: 1 },
   { unique: true, partialFilterExpression: { phoneNumber: { $gt: '' } } },
 );
+
+// The admin's customer list filters and sorts on the derived visit figures.
+customerSchema.index({ lastVisitAt: -1 });
+customerSchema.index({ firstVisitAt: -1 });
+customerSchema.index({ visitCount: -1 });
+customerSchema.index({ totalSpent: -1 });
 
 export const CustomerModel = model<CustomerDocument>('Customer', customerSchema);

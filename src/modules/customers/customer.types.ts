@@ -1,3 +1,5 @@
+import type { CustomerSegment, CustomerSortField } from './customerSegments';
+
 export interface CustomerPublic {
   id: string;
   parentName: string;
@@ -7,6 +9,7 @@ export interface CustomerPublic {
   visitCount: number;
   totalSpent: number;
   lastVisitAt: Date | null;
+  firstVisitAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,7 +32,29 @@ export interface ListCustomersQuery {
   page: number;
   limit: number;
   search?: string;
+  segment?: CustomerSegment;
+  minVisits?: number;
+  maxVisits?: number;
+  /** Integer minor units. */
+  minSpent?: number;
+  maxSpent?: number;
+  /** Business dates, `YYYY-MM-DD`, both ends inclusive. */
+  lastVisitFrom?: string;
+  lastVisitTo?: string;
+  firstVisitFrom?: string;
+  firstVisitTo?: string;
+  joinedFrom?: string;
+  joinedTo?: string;
+  /** The family had at least one visit between these dates. */
+  visitedFrom?: string;
+  visitedTo?: string;
+  hasPhone?: boolean;
+  hasEmail?: boolean;
+  sort: CustomerSortField;
+  order: 'asc' | 'desc';
 }
+
+export type CustomerSegmentCounts = Record<CustomerSegment | 'all', number>;
 
 export interface CustomerChild {
   childName: string;

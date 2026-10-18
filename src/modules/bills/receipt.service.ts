@@ -313,10 +313,17 @@ export const receiptService = {
     lines.push(dashLine(width));
 
     lines.push(twoColumnLine('Subtotal', formatMoney(data.bill.subtotal), width));
-    // The automatic multi-child discount on its own line, then whatever the cashier gave.
+    // The automatic multi-child discount on its own line - printed as "Family discount",
+    // the name parents know it by - then whatever the cashier gave. The children count
+    // only fits on 80mm paper; on 58mm the label keeps to the rate so the amount stays
+    // on the same line.
     const multiChild = data.bill.multiChildDiscount ?? 0;
     if (multiChild > 0) {
-      const label = `Multi-child (${data.bill.multiChildCount} kids, ${data.bill.multiChildDiscountPercentage}%)`;
+      const percentage = data.bill.multiChildDiscountPercentage;
+      const label =
+        width >= 48
+          ? `Family discount (${data.bill.multiChildCount} kids, ${percentage}%)`
+          : `Family discount ${percentage}%`;
       lines.push(twoColumnLine(label, `-${formatMoney(multiChild)}`, width));
     }
     const manualDiscount = data.bill.discount - multiChild;

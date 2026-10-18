@@ -576,7 +576,7 @@ export const reportsService = {
           cashierName: bill.cashierName,
           reason: '',
           detail: (bill.multiChildDiscount ?? 0) > 0
-            ? `${percentOf(bill.discount, bill.subtotal)} - incl. ${bill.multiChildDiscountPercentage}% multi-child (${formatMoney(bill.multiChildDiscount)})`
+            ? `${percentOf(bill.discount, bill.subtotal)} - incl. ${bill.multiChildDiscountPercentage}% family discount (${formatMoney(bill.multiChildDiscount)})`
             : percentOf(bill.discount, bill.subtotal),
         }),
       ),

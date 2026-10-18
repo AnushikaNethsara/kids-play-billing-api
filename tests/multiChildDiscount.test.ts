@@ -174,8 +174,15 @@ describe('multi-child discount', () => {
     const paid = await pay(accessToken, draft.body.data.id);
 
     const text = await request(app).get(`${API}/bills/${paid.id}/receipt/text`).set(auth(accessToken));
-    expect(text.text).toMatch(/Multi-child \(2 kids, 10%\)\s+-70\.00/);
+    // The default paper is 58mm, where the label keeps to the rate.
+    expect(text.text).toMatch(/Family discount 10%\s+-70\.00/);
+    expect(text.text).not.toMatch(/Multi-child/);
     expect(text.text).toMatch(/Discount\s+-30\.00/);
+
+    // 80mm paper has room for the children count too.
+    await request(app).patch(`${API}/settings`).set(auth(adminToken)).send({ receiptPaperWidth: '80MM' });
+    const wide = await request(app).get(`${API}/bills/${paid.id}/receipt/text`).set(auth(accessToken));
+    expect(wide.text).toMatch(/Family discount \(2 kids, 10%\)\s+-70\.00/);
   });
 
   it('counts in the dashboard discounts, and the daily close still matches', async () => {

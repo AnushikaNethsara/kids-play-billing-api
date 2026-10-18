@@ -27,5 +27,23 @@ export const updateSettingsSchema = z
     logoRasterHeightDots: z.number().int().min(0).max(2000).optional(),
     showLogoOnReceipt: z.boolean().optional(),
     loyaltyVisitInterval: z.number().int().min(0).max(100).optional(),
+    multiChildDiscountTiers: z
+      .array(
+        z.object({
+          minChildren: z.number().int().min(2, 'A tier starts at 2 children or more').max(20),
+          percentage: z
+            .number()
+            .min(0)
+            .max(100)
+            .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 1e-9, {
+              message: 'At most 2 decimal places',
+            }),
+        }),
+      )
+      .max(10)
+      .refine((tiers) => new Set(tiers.map((tier) => tier.minChildren)).size === tiers.length, {
+        message: 'Each tier needs a different number of children',
+      })
+      .optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field is required' });

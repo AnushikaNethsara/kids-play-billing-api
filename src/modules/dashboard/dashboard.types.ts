@@ -21,7 +21,10 @@ export interface MoneyBreakdown {
 
 export interface DashboardSummary {
   grossRevenue: number;
+  /** Every discount, the automatic multi-child one included. */
   discounts: number;
+  /** The automatic multi-child part of `discounts`. */
+  multiChildDiscounts: number;
   /** Written off paid bills by admin corrections - money never collected. */
   writeOffs: number;
   refunds: number;

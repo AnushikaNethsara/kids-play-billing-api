@@ -54,6 +54,8 @@ export const dashboardService = {
           _id: null,
           grossRevenue: { $sum: '$subtotal' },
           discounts: { $sum: '$discount' },
+          // The automatic part of `discounts`, which already includes it.
+          multiChildDiscounts: { $sum: { $ifNull: ['$multiChildDiscount', 0] } },
           writeOffs: { $sum: BILL_WRITE_OFF },
           refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
           paidBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.PAID] }, 1, 0] } },
@@ -140,6 +142,7 @@ export const dashboardService = {
     return {
       grossRevenue,
       discounts,
+      multiChildDiscounts: totals?.multiChildDiscounts ?? 0,
       writeOffs,
       refunds,
       netRevenue: grossRevenue - discounts - writeOffs - refunds,

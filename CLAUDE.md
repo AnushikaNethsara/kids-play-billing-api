@@ -104,6 +104,11 @@ reports must never recompute from the current `PlayPackage` price.
   package. Both `quoteSession` and checkout call it. The bill line carries the *charged*
   package (the receipt prints it unchanged); `chosen*` line fields are admin-only. See
   `../docs/best-price.md`.
+- **Multi-child discount**: `calculateBillTotals` takes `multiChildPercentage`. The automatic
+  discount comes off the PLAY lines first, then the cashier's discount on the rest.
+  `discount` = both. `priceDraft` in bill.service.ts snapshots the percentage onto the draft,
+  and `completeBill` reuses it. The cashier cap and the above-threshold audit see the manual
+  part only. See `../docs/multi-child-discount.md`.
 - **Discount cap**: `billCalculator.ts#validateDiscountPermission` caps cashiers at
   `BusinessSettings.maximumCashierDiscountPercentage`; admins are uncapped. Discounts
   above that threshold get an audit log entry regardless of role.

@@ -4,7 +4,7 @@ import { billNumberService } from './billNumber.service';
 import { playPackageRepository } from '../play-packages/playPackage.repository';
 import { customerService } from '../customers/customer.service';
 import { settingsService } from '../settings/settings.service';
-import { resolveMinimumBillableMinutes } from '../settings/settings.model';
+import { resolveMinimumBillableMinutes, resolveMultiChildTiers } from '../settings/settings.model';
 import { playSessionRepository } from '../play-sessions/playSession.repository';
 import { productRepository } from '../products/product.repository';
 import {
@@ -38,6 +38,8 @@ import {
   calculateBillTotals,
   checkoutTimeOf,
   isDiscountAboveThreshold,
+  multiChildPercentage,
+  playChildrenOnItems,
   priceGroupVisit,
   priceSession,
   priceSessionBestOf,
@@ -145,6 +147,9 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     discount: bill.discount,
     discountType: bill.discountType,
     discountValue: bill.discountValue,
+    multiChildDiscount: bill.multiChildDiscount ?? 0,
+    multiChildDiscountPercentage: bill.multiChildDiscountPercentage ?? 0,
+    multiChildCount: bill.multiChildCount ?? 0,
     tax: bill.tax,
     grandTotal: bill.grandTotal,
     paidAmount: bill.paidAmount,
@@ -415,6 +420,60 @@ async function releaseClaimedSessions(sessions: PlaySessionHydrated[]): Promise<
   }
 }
 
+/**
+ * Prices a draft: the automatic multi-child discount from the current tiers, then the
+ * cashier's discount on what is left, then tax. The cashier cap is checked against the
+ * manual discount alone - it limits what a cashier gives, and the automatic discount is the
+ * business's own rule, never the cashier's. The percentage is returned so the draft can
+ * snapshot it: completion reuses it, so a tier edited mid-checkout changes nothing.
+ */
+function priceDraft(
+  items: BillItemSubdocument[],
+  discountType: DiscountType,
+  discountValue: number,
+  actor: AuthenticatedUser,
+  settings: Awaited<ReturnType<typeof settingsService.getRaw>>,
+) {
+  const multiChildCount = playChildrenOnItems(items);
+  const percentage = multiChildPercentage(resolveMultiChildTiers(settings), multiChildCount);
+
+  const beforeManual = calculateBillTotals({
+    items,
+    discountType: DiscountType.NONE,
+    discountValue: 0,
+    taxEnabled: false,
+    taxPercentage: 0,
+    multiChildPercentage: percentage,
+  });
+
+  validateDiscountPermission({
+    role: actor.role,
+    subtotal: beforeManual.subtotal - beforeManual.multiChildDiscount,
+    discountType,
+    discountValue,
+    maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
+  });
+
+  const totals = calculateBillTotals({
+    items,
+    discountType,
+    discountValue,
+    taxEnabled: settings.taxEnabled,
+    taxPercentage: settings.taxPercentage,
+    multiChildPercentage: percentage,
+  });
+
+  return {
+    totals,
+    multiChild: {
+      multiChildDiscount: totals.multiChildDiscount,
+      // Snapshotted only when it applied, so a bill with too few children reads as none.
+      multiChildDiscountPercentage: totals.multiChildDiscount > 0 ? percentage : 0,
+      multiChildCount: totals.multiChildDiscount > 0 ? multiChildCount : 0,
+    },
+  };
+}
+
 export const billService = {
   async createDraft(input: CreateBillInput, actor: AuthenticatedUser): Promise<BillPublic> {
     const settings = await settingsService.getRaw();
@@ -423,29 +482,7 @@ export const billService = {
     const discountType = input.discount?.type ?? DiscountType.NONE;
     const discountValue = input.discount?.value ?? 0;
 
-    const preDiscountTotals = calculateBillTotals({
-      items,
-      discountType: DiscountType.NONE,
-      discountValue: 0,
-      taxEnabled: false,
-      taxPercentage: 0,
-    });
-
-    validateDiscountPermission({
-      role: actor.role,
-      subtotal: preDiscountTotals.subtotal,
-      discountType,
-      discountValue,
-      maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
-    });
-
-    const totals = calculateBillTotals({
-      items,
-      discountType,
-      discountValue,
-      taxEnabled: settings.taxEnabled,
-      taxPercentage: settings.taxPercentage,
-    });
+    const { totals, multiChild } = priceDraft(items, discountType, discountValue, actor, settings);
 
     const bill = await billRepository.create({
       status: BillStatus.DRAFT,
@@ -457,6 +494,7 @@ export const billService = {
       discount: totals.discount,
       discountType,
       discountValue,
+      ...multiChild,
       tax: totals.tax,
       grandTotal: totals.grandTotal,
       paymentMethod: input.paymentMethod ?? null,
@@ -596,29 +634,7 @@ export const billService = {
       const discountType = input.discount?.type ?? DiscountType.NONE;
       const discountValue = input.discount?.value ?? 0;
 
-      const preDiscountTotals = calculateBillTotals({
-        items,
-        discountType: DiscountType.NONE,
-        discountValue: 0,
-        taxEnabled: false,
-        taxPercentage: 0,
-      });
-
-      validateDiscountPermission({
-        role: actor.role,
-        subtotal: preDiscountTotals.subtotal,
-        discountType,
-        discountValue,
-        maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
-      });
-
-      const totals = calculateBillTotals({
-        items,
-        discountType,
-        discountValue,
-        taxEnabled: settings.taxEnabled,
-        taxPercentage: settings.taxPercentage,
-      });
+      const { totals, multiChild } = priceDraft(items, discountType, discountValue, actor, settings);
 
       // Customer details come from the request when supplied, otherwise from whatever
       // was captured at check-in on the first ticket.
@@ -637,6 +653,7 @@ export const billService = {
         discount: totals.discount,
         discountType,
         discountValue,
+        ...multiChild,
         tax: totals.tax,
         grandTotal: totals.grandTotal,
         paymentMethod: input.paymentMethod ?? null,
@@ -712,34 +729,15 @@ export const billService = {
     const discountType = input.discount?.type ?? bill.discountType;
     const discountValue = input.discount?.value ?? bill.discountValue;
 
-    const preDiscountTotals = calculateBillTotals({
-      items: bill.items,
-      discountType: DiscountType.NONE,
-      discountValue: 0,
-      taxEnabled: false,
-      taxPercentage: 0,
-    });
-
-    validateDiscountPermission({
-      role: actor.role,
-      subtotal: preDiscountTotals.subtotal,
-      discountType,
-      discountValue,
-      maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
-    });
-
-    const totals = calculateBillTotals({
-      items: bill.items,
-      discountType,
-      discountValue,
-      taxEnabled: settings.taxEnabled,
-      taxPercentage: settings.taxPercentage,
-    });
+    const { totals, multiChild } = priceDraft(bill.items, discountType, discountValue, actor, settings);
 
     bill.discountType = discountType;
     bill.discountValue = discountValue;
     bill.subtotal = totals.subtotal;
     bill.discount = totals.discount;
+    bill.multiChildDiscount = multiChild.multiChildDiscount;
+    bill.multiChildDiscountPercentage = multiChild.multiChildDiscountPercentage;
+    bill.multiChildCount = multiChild.multiChildCount;
     bill.tax = totals.tax;
     bill.grandTotal = totals.grandTotal;
 
@@ -799,6 +797,8 @@ export const billService = {
       discountValue: bill.discountValue,
       taxEnabled: settings.taxEnabled,
       taxPercentage: settings.taxPercentage,
+      // The rule as snapshotted on the draft, never the current tiers.
+      multiChildPercentage: bill.multiChildDiscountPercentage ?? 0,
     });
 
     const paidAmount = input.paidAmount ?? totals.grandTotal;
@@ -825,6 +825,7 @@ export const billService = {
       status: BillStatus.PAID,
       subtotal: totals.subtotal,
       discount: totals.discount,
+      multiChildDiscount: totals.multiChildDiscount,
       tax: totals.tax,
       grandTotal: totals.grandTotal,
       paidAmount,
@@ -860,7 +861,15 @@ export const billService = {
       throw new InvalidStateError('Bill is no longer in draft status - it may have already been completed');
     }
 
-    if (isDiscountAboveThreshold(totals.subtotal, bill.discountType, bill.discountValue, settings.maximumCashierDiscountPercentage)) {
+    // The manual discount alone: the automatic multi-child discount is the business's rule.
+    if (
+      isDiscountAboveThreshold(
+        totals.subtotal - totals.multiChildDiscount,
+        bill.discountType,
+        bill.discountValue,
+        settings.maximumCashierDiscountPercentage,
+      )
+    ) {
       await auditLogService.record({
         userId: actor.id,
         userName: actor.name,
@@ -871,7 +880,8 @@ export const billService = {
           discountType: bill.discountType,
           discountValue: bill.discountValue,
           subtotal: totals.subtotal,
-          discount: totals.discount,
+          discount: totals.manualDiscount,
+          multiChildDiscount: totals.multiChildDiscount,
           thresholdPercentage: settings.maximumCashierDiscountPercentage,
         },
       });

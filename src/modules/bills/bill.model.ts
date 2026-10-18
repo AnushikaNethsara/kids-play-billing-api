@@ -120,6 +120,15 @@ export interface BillDocument {
   discount: number;
   discountType: DiscountType;
   discountValue: number;
+  /**
+   * The automatic multi-child discount on play time, already included in `discount`
+   * (which stays the total of every discount). The percentage and children count are the
+   * rule as it applied when the draft was made; completion reuses the percentage. All 0
+   * when it did not apply, and absent on bills from before it existed.
+   */
+  multiChildDiscount: number;
+  multiChildDiscountPercentage: number;
+  multiChildCount: number;
   tax: number;
   grandTotal: number;
   paidAmount: number;
@@ -257,6 +266,9 @@ const billSchema = new Schema<BillDocument>(
     discount: { type: Number, required: true, default: 0 },
     discountType: { type: String, enum: Object.values(DiscountType), default: DiscountType.NONE },
     discountValue: { type: Number, default: 0 },
+    multiChildDiscount: { type: Number, default: 0 },
+    multiChildDiscountPercentage: { type: Number, default: 0 },
+    multiChildCount: { type: Number, default: 0 },
     tax: { type: Number, required: true, default: 0 },
     grandTotal: { type: Number, required: true, default: 0 },
     paidAmount: { type: Number, default: 0 },

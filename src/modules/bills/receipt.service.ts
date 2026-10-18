@@ -176,6 +176,9 @@ export const receiptService = {
         }),
         subtotal: bill.subtotal,
         discount: bill.discount,
+        multiChildDiscount: bill.multiChildDiscount ?? 0,
+        multiChildDiscountPercentage: bill.multiChildDiscountPercentage ?? 0,
+        multiChildCount: bill.multiChildCount ?? 0,
         tax: bill.tax,
         writeOff: bill.writeOff ?? 0,
         grandTotal: bill.grandTotal,
@@ -310,8 +313,15 @@ export const receiptService = {
     lines.push(dashLine(width));
 
     lines.push(twoColumnLine('Subtotal', formatMoney(data.bill.subtotal), width));
-    if (data.bill.discount > 0) {
-      lines.push(twoColumnLine('Discount', `-${formatMoney(data.bill.discount)}`, width));
+    // The automatic multi-child discount on its own line, then whatever the cashier gave.
+    const multiChild = data.bill.multiChildDiscount ?? 0;
+    if (multiChild > 0) {
+      const label = `Multi-child (${data.bill.multiChildCount} kids, ${data.bill.multiChildDiscountPercentage}%)`;
+      lines.push(twoColumnLine(label, `-${formatMoney(multiChild)}`, width));
+    }
+    const manualDiscount = data.bill.discount - multiChild;
+    if (manualDiscount > 0) {
+      lines.push(twoColumnLine('Discount', `-${formatMoney(manualDiscount)}`, width));
     }
     if (data.bill.tax > 0) {
       lines.push(twoColumnLine('Tax', formatMoney(data.bill.tax), width));

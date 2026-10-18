@@ -6,6 +6,15 @@ export const PaperWidth = {
 } as const;
 export type PaperWidth = (typeof PaperWidth)[keyof typeof PaperWidth];
 
+/**
+ * One step of the multi-child discount: a bill with at least `minChildren` children on
+ * play gets `percentage` off its play time. See docs/multi-child-discount.md.
+ */
+export interface MultiChildDiscountTier {
+  minChildren: number;
+  percentage: number;
+}
+
 export interface BusinessSettingsDocument {
   businessName: string;
   address: string;
@@ -44,6 +53,12 @@ export interface BusinessSettingsDocument {
    * and checkout. 0 turns the flag off. Only a flag: the cashier applies any discount.
    */
   loyaltyVisitInterval: number;
+  /**
+   * Applied automatically to a bill's play time by the number of children on it. The tier
+   * with the highest `minChildren` not above the count applies, so the top tier covers
+   * every larger family. Empty (the default) turns it off.
+   */
+  multiChildDiscountTiers: MultiChildDiscountTier[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,6 +96,18 @@ const businessSettingsSchema = new Schema<BusinessSettingsDocument>(
     logoRasterHeightDots: { type: Number, default: 0 },
     showLogoOnReceipt: { type: Boolean, default: false },
     loyaltyVisitInterval: { type: Number, default: 0, min: 0, max: 100 },
+    multiChildDiscountTiers: {
+      type: [
+        new Schema<MultiChildDiscountTier>(
+          {
+            minChildren: { type: Number, required: true, min: 2 },
+            percentage: { type: Number, required: true, min: 0, max: 100 },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true },
 );
@@ -109,6 +136,27 @@ export function resolveLoyaltyVisitInterval(
 ): number {
   const value = settings.loyaltyVisitInterval;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+/**
+ * The multi-child tiers, sorted by `minChildren`, with anything unusable dropped. Empty
+ * for documents saved before the discount existed. This is money arithmetic, so it is
+ * read defensively rather than trusting the schema default.
+ */
+export function resolveMultiChildTiers(
+  settings: Partial<Pick<BusinessSettingsDocument, 'multiChildDiscountTiers'>>,
+): MultiChildDiscountTier[] {
+  return (settings.multiChildDiscountTiers ?? [])
+    .filter(
+      (tier) =>
+        Number.isInteger(tier.minChildren) &&
+        tier.minChildren >= 2 &&
+        Number.isFinite(tier.percentage) &&
+        tier.percentage > 0 &&
+        tier.percentage <= 100,
+    )
+    .map((tier) => ({ minChildren: tier.minChildren, percentage: tier.percentage }))
+    .sort((a, b) => a.minChildren - b.minChildren);
 }
 
 export const BusinessSettingsModel = model<BusinessSettingsDocument>(

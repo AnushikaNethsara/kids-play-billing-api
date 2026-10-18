@@ -57,6 +57,16 @@ export interface CheckInResult {
   created: boolean;
 }
 
+export interface SessionAlternativeRatePublic {
+  playPackageId: string;
+  packageName: string;
+  rateDurationMinutes: number;
+  unitPrice: number;
+  pricingMode: SessionPricingMode;
+  graceMinutes: number;
+  tieredPricing: TieredPricing | null;
+}
+
 export interface PlaySessionPublic {
   id: string;
   ticketCode: string;
@@ -75,6 +85,8 @@ export interface PlaySessionPublic {
   graceMinutes: number;
   /** The hourly rates, overtime and rounding of a TIERED_HOURLY session. Null otherwise. */
   tieredPricing: TieredPricing | null;
+  /** Comparable packages frozen at check-in; checkout charges the cheapest. */
+  alternativeRates: SessionAlternativeRatePublic[];
   customerId: string | null;
   parentName: string;
   phoneNumber: string;
@@ -83,6 +95,9 @@ export interface PlaySessionPublic {
   billedMinutes: number | null;
   /** What this session was billed, frozen at checkout. Null while still playing. */
   chargedAmount: number | null;
+  /** The package charged when best price picked one other than the chosen package. */
+  chargedPlayPackageId: string | null;
+  chargedPackageName: string | null;
   billId: string | null;
   checkInCashierId: string;
   checkInCashierName: string;
@@ -129,6 +144,12 @@ export interface SessionQuote {
    * Null under PRORATA, where every passing minute already costs something.
    */
   nextChargeAt: Date | null;
+  /**
+   * The package this price is under, when best price picked one cheaper than the
+   * chosen package; null when the chosen package is cheapest. For the till only -
+   * never printed. `breakdown` describes this package's rate.
+   */
+  pricedAs: { playPackageId: string; packageName: string } | null;
 }
 
 export interface PlaySessionWithQuote {

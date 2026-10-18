@@ -7,7 +7,13 @@ import { settingsService } from '../settings/settings.service';
 import { resolveMinimumBillableMinutes } from '../settings/settings.model';
 import { playSessionRepository } from '../play-sessions/playSession.repository';
 import { productRepository } from '../products/product.repository';
-import { resolveChildCount, resolveChildNames, resolveSessionRate } from '../play-sessions/playSession.model';
+import {
+  resolveChildCount,
+  resolveChildNames,
+  resolveSessionRate,
+  resolveSessionRates,
+  type NamedSessionRate,
+} from '../play-sessions/playSession.model';
 import type { PlaySessionHydrated } from '../play-sessions/playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { auditLogService } from '../audit-logs/auditLog.service';
@@ -34,7 +40,7 @@ import {
   isDiscountAboveThreshold,
   priceGroupVisit,
   priceSession,
-  priceSessionForPeriod,
+  priceSessionBestOf,
   validateDiscountPermission,
 } from './billCalculator';
 import type {
@@ -120,6 +126,9 @@ function toPublicItem(item: BillItemSubdocument): BillItemPublic {
     rawTotal: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.rawTotal ?? null) : null,
     roundingAdjustment:
       pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.roundingAdjustment ?? null) : null,
+    chosenPlayPackageId: item.chosenPlayPackageId ? item.chosenPlayPackageId.toString() : null,
+    chosenPackageName: item.chosenPackageName ?? null,
+    chosenLineTotal: item.chosenLineTotal ?? null,
   };
 }
 
@@ -208,6 +217,10 @@ const NO_SESSION = {
   pricingMode: SessionPricingMode.PRORATA,
   graceMinutes: 0,
   tieredPricing: null,
+  // Best price compares timed rates only, so it never touches a line like this.
+  chosenPlayPackageId: null,
+  chosenPackageName: null,
+  chosenLineTotal: null,
 } as const;
 
 /**
@@ -483,6 +496,9 @@ export const billService = {
     const checkOutAt = resolveCheckOutAt(input.checkOutAt, now);
 
     const claimed: PlaySessionHydrated[] = [];
+    // Which rate each claimed ticket was charged under, and what its chosen package
+    // would have cost - read back when its bill line is built.
+    const charged = new Map<string, { rate: NamedSessionRate; switched: boolean; chosenLineTotal: number }>();
 
     try {
       for (const ticketCode of ticketCodes) {
@@ -504,13 +520,15 @@ export const billService = {
 
         // The same call the live quote makes, so what the cashier was shown a moment ago
         // and what is actually billed cannot come from two different implementations.
-        const rate = resolveSessionRate(session);
-        const { billedMinutes, breakdown } = priceSessionForPeriod({
+        // Best price: the cheapest of the chosen package and the comparable packages
+        // frozen onto the ticket at check-in; just the chosen one when there are none.
+        const { billedMinutes, breakdown, index, rate, chosenLineTotal } = priceSessionBestOf({
           checkInAt: session.checkInAt,
           checkOutAt,
-          rate,
+          rates: resolveSessionRates(session),
           minimumBillableMinutes,
         });
+        const switched = index !== 0;
 
         // Compare-and-set on ACTIVE: the loser of a race gets null and we roll back.
         // A family ticket is one child's price times the headcount, frozen here in the
@@ -519,6 +537,8 @@ export const billService = {
           checkOutAt,
           billedMinutes,
           chargedAmount: breakdown.lineTotal * resolveChildCount(session),
+          chargedPlayPackageId: switched ? rate.playPackageId : null,
+          chargedPackageName: switched ? rate.packageName : null,
           checkOutCashierId: new Types.ObjectId(actor.id),
           checkOutCashierName: actor.name,
         });
@@ -528,18 +548,26 @@ export const billService = {
         }
 
         claimed.push(claimedSession);
+        charged.set(claimedSession.id, { rate, switched, chosenLineTotal });
       }
 
       const items = claimed.flatMap<BillItemSubdocument>((session) => {
-        const rate = resolveSessionRate(session);
+        // Always set by the loop above; the fallback is the chosen rate, as before.
+        const { rate, switched, chosenLineTotal } = charged.get(session.id) ?? {
+          rate: resolveSessionRates(session)[0],
+          switched: false,
+          chosenLineTotal: 0,
+        };
         const playLine: BillItemSubdocument = {
           kind: BillItemKind.PLAY,
           childName: session.childName,
-          playPackageId: session.playPackageId,
-          packageName: session.packageName,
-          // The package rate as snapshotted at check-in, never re-read from PlayPackage.
-          durationMinutes: session.rateDurationMinutes,
-          unitPrice: session.unitPrice,
+          // The package charged, which is what the receipt prints. Under best price that
+          // may not be the one chosen at check-in; the choice is kept below, admin-only.
+          playPackageId: rate.playPackageId,
+          packageName: rate.packageName,
+          // The rate as snapshotted at check-in, never re-read from PlayPackage.
+          durationMinutes: rate.rateDurationMinutes,
+          unitPrice: rate.unitPrice,
           // The children on the ticket. Still not a multiplier of unitPrice: a timed
           // line's total is lineTotal, never unitPrice x quantity.
           quantity: resolveChildCount(session),
@@ -549,6 +577,9 @@ export const billService = {
           pricingMode: rate.pricingMode,
           graceMinutes: rate.graceMinutes,
           tieredPricing: rate.tieredPricing,
+          chosenPlayPackageId: switched ? session.playPackageId : null,
+          chosenPackageName: switched ? session.packageName : null,
+          chosenLineTotal: switched ? chosenLineTotal : null,
           productId: null,
           visitAt: null,
           visitMinutes: null,

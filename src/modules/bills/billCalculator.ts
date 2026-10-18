@@ -524,6 +524,67 @@ export function priceSessionForPeriod(params: {
   return { ...duration, breakdown: priceSession(params.rate, duration.billedMinutes) };
 }
 
+export interface BestSessionPricing<Rate extends SessionRateSnapshot> extends SessionPricing {
+  /** Index into `rates` of the rate charged. 0 means the chosen package was cheapest. */
+  index: number;
+  rate: Rate;
+  /** One child's price under the chosen package (`rates[0]`), for the admin comparison. */
+  chosenLineTotal: number;
+  /**
+   * Minutes until the charged total next rises. The cheapest rate's countdown, or - when
+   * several tie - the latest of theirs: the lowest price only rises once every rate that
+   * shares it has risen.
+   */
+  minutesUntilNextCharge: number | null;
+}
+
+/**
+ * Best-price checkout: prices the stay under the chosen package (`rates[0]`) and under every
+ * comparable package snapshotted onto the ticket at check-in, and charges the cheapest.
+ *
+ * Each rate goes through `priceSessionForPeriod`, so each keeps its own minimum rule. A
+ * tie goes to the chosen package, then to the earlier rate, so adding a comparable
+ * package never moves a visit that it does not make cheaper. Prices are per child; a
+ * family ticket multiplies the winner out, exactly as before.
+ */
+export function priceSessionBestOf<Rate extends SessionRateSnapshot>(params: {
+  checkInAt: Date;
+  checkOutAt: Date;
+  rates: [Rate, ...Rate[]];
+  minimumBillableMinutes: number;
+}): BestSessionPricing<Rate> {
+  const priced = params.rates.map((rate) =>
+    priceSessionForPeriod({
+      checkInAt: params.checkInAt,
+      checkOutAt: params.checkOutAt,
+      rate,
+      minimumBillableMinutes: params.minimumBillableMinutes,
+    }),
+  );
+
+  let index = 0;
+  for (let i = 1; i < priced.length; i += 1) {
+    if (priced[i].breakdown.lineTotal < priced[index].breakdown.lineTotal) index = i;
+  }
+  const lowest = priced[index].breakdown.lineTotal;
+
+  const tiedCountdowns = priced
+    .filter((pricing) => pricing.breakdown.lineTotal === lowest)
+    .map((pricing) => pricing.breakdown.minutesUntilNextCharge);
+  // A PRORATA rate rises every minute (null - no countdown). The lowest price holds until
+  // the last tied rate rises, so a tied rate with a countdown wins over one without.
+  const countdowns = tiedCountdowns.filter((minutes): minutes is number => minutes !== null);
+  const minutesUntilNextCharge = countdowns.length > 0 ? Math.max(...countdowns) : null;
+
+  return {
+    ...priced[index],
+    index,
+    rate: params.rates[index],
+    chosenLineTotal: priced[0].breakdown.lineTotal,
+    minutesUntilNextCharge,
+  };
+}
+
 /**
  * When this bill's checkout happened - the moment a payment recorded after the fact is
  * dated to.

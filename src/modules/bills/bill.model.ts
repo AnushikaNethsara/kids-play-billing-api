@@ -75,6 +75,17 @@ export interface BillItemSubdocument {
    * line. `lineTotal` already includes the rounding.
    */
   tieredPricing: TieredPricing | null;
+
+  /**
+   * Best price: set only on a session line charged under a cheaper comparable package
+   * than the one chosen at check-in. Every field above then describes the package
+   * charged - which is what the receipt prints - and these keep what was chosen, for the
+   * admin only. `chosenLineTotal` is one child's price under the chosen package. Null on
+   * every other line, and absent on lines from before best price.
+   */
+  chosenPlayPackageId: Types.ObjectId | null;
+  chosenPackageName: string | null;
+  chosenLineTotal: number | null;
 }
 
 /** One field an admin correction changed, with its value before and after. */
@@ -203,6 +214,9 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     },
     graceMinutes: { type: Number, default: 0 },
     tieredPricing: { type: tieredPricingSchema, default: null },
+    chosenPlayPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', default: null },
+    chosenPackageName: { type: String, default: null },
+    chosenLineTotal: { type: Number, default: null },
   },
   { _id: false },
 );

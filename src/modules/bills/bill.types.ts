@@ -181,6 +181,14 @@ export interface BillItemPublic {
   rawTotal: number | null;
   /** TIERED_HOURLY only: `lineTotal - rawTotal`. */
   roundingAdjustment: number | null;
+  /**
+   * Best price, admin only - never on the receipt. Set when the line was charged under a
+   * cheaper comparable package than the one chosen; the fields above describe the
+   * package charged. `chosenLineTotal` is one child's price under the chosen package.
+   */
+  chosenPlayPackageId: string | null;
+  chosenPackageName: string | null;
+  chosenLineTotal: number | null;
 }
 
 export interface BillPublic {

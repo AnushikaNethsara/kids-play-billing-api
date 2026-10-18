@@ -11,7 +11,7 @@ import {
 import { InvalidPlayPackageError } from '../bills/bill.errors';
 import { auditLogService } from '../audit-logs/auditLog.service';
 import { AuditAction, AuditEntityType } from '../../common/constants/auditActions';
-import { priceSessionForPeriod } from '../bills/billCalculator';
+import { priceSessionBestOf } from '../bills/billCalculator';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { UserRole } from '../../common/constants/roles';
 import { AuthorizationError, InvalidStateError, NotFoundError, ValidationError } from '../../common/errors';
@@ -20,10 +20,13 @@ import {
   resolveChildCount,
   resolveChildNames,
   resolveSessionRate,
+  resolveSessionRates,
   sumSessionExtras,
   type PlaySessionExtraSubdocument,
   type PlaySessionHydrated,
+  type SessionAlternativeRate,
 } from './playSession.model';
+import type { PlayPackageHydrated } from '../play-packages/playPackage.model';
 import { productRepository } from '../products/product.repository';
 import { InvalidProductError } from '../bills/bill.errors';
 import type {
@@ -62,6 +65,11 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     pricingMode: resolveSessionRate(session).pricingMode,
     graceMinutes: resolveSessionRate(session).graceMinutes,
     tieredPricing: resolveSessionRate(session).tieredPricing,
+    alternativeRates: (session.alternativeRates ?? []).map((alternative) => ({
+      ...resolveSessionRate(alternative),
+      playPackageId: alternative.playPackageId.toString(),
+      packageName: alternative.packageName,
+    })),
     customerId: session.customerId ? session.customerId.toString() : null,
     parentName: session.parentName,
     phoneNumber: session.phoneNumber,
@@ -69,6 +77,8 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     checkOutAt: session.checkOutAt,
     billedMinutes: session.billedMinutes,
     chargedAmount: session.chargedAmount ?? null,
+    chargedPlayPackageId: session.chargedPlayPackageId ? session.chargedPlayPackageId.toString() : null,
+    chargedPackageName: session.chargedPackageName ?? null,
     billId: session.billId ? session.billId.toString() : null,
     checkInCashierId: session.checkInCashierId.toString(),
     checkInCashierName: session.checkInCashierName,
@@ -103,25 +113,35 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
 export function quoteSession(
   session: Pick<
     PlaySessionHydrated,
-    'checkInAt' | 'unitPrice' | 'rateDurationMinutes' | 'pricingMode' | 'graceMinutes' | 'tieredPricing'
+    | 'checkInAt'
+    | 'playPackageId'
+    | 'packageName'
+    | 'unitPrice'
+    | 'rateDurationMinutes'
+    | 'pricingMode'
+    | 'graceMinutes'
+    | 'tieredPricing'
   > &
-    Partial<Pick<PlaySessionHydrated, 'childCount'>>,
+    Partial<Pick<PlaySessionHydrated, 'childCount' | 'alternativeRates'>>,
   asOf: Date,
   settings: { minimumBillableMinutes: number; maximumSessionHours: number },
 ): SessionQuote {
-  const { elapsedMinutes, billedMinutes, minimumApplied, breakdown } = priceSessionForPeriod({
-    checkInAt: session.checkInAt,
-    checkOutAt: asOf,
-    rate: resolveSessionRate(session),
-    minimumBillableMinutes: settings.minimumBillableMinutes,
-  });
+  // Best price: the cheapest of the chosen package and the comparable ones frozen at
+  // check-in. With no comparable packages this is exactly the chosen package's price.
+  const { elapsedMinutes, billedMinutes, minimumApplied, breakdown, index, rate, minutesUntilNextCharge } =
+    priceSessionBestOf({
+      checkInAt: session.checkInAt,
+      checkOutAt: asOf,
+      rates: resolveSessionRates(session),
+      minimumBillableMinutes: settings.minimumBillableMinutes,
+    });
 
   // An absolute instant rather than a duration, so a board polling every 30 seconds can
   // tick the countdown down locally instead of showing a number that is half a minute old.
   const nextChargeAt =
-    breakdown.minutesUntilNextCharge === null
+    minutesUntilNextCharge === null
       ? null
-      : new Date(asOf.getTime() + breakdown.minutesUntilNextCharge * MILLISECONDS_PER_MINUTE);
+      : new Date(asOf.getTime() + minutesUntilNextCharge * MILLISECONDS_PER_MINUTE);
 
   const childCount = resolveChildCount(session);
 
@@ -136,6 +156,29 @@ export function quoteSession(
     exceedsMaximumSession: elapsedMinutes > settings.maximumSessionHours * MINUTES_PER_HOUR,
     breakdown,
     nextChargeAt,
+    pricedAs: index === 0 ? null : { playPackageId: rate.playPackageId.toString(), packageName: rate.packageName },
+  };
+}
+
+/** A package's rate frozen as a ticket carries it, normalised like the chosen rate. */
+function snapshotRate(pkg: PlayPackageHydrated): SessionAlternativeRate {
+  // Read through the same resolver the session uses, so the snapshot is already
+  // normalised (grace 0 under PRORATA) rather than a raw copy of the package.
+  const rate = resolveSessionRate({
+    unitPrice: pkg.price,
+    rateDurationMinutes: pkg.durationMinutes,
+    pricingMode: resolvePricingMode(pkg),
+    graceMinutes: resolveGraceMinutes(pkg),
+    tieredPricing: resolveTieredPricing(pkg),
+  });
+  return {
+    playPackageId: pkg._id,
+    packageName: pkg.name,
+    rateDurationMinutes: rate.rateDurationMinutes,
+    unitPrice: rate.unitPrice,
+    pricingMode: rate.pricingMode,
+    graceMinutes: rate.graceMinutes,
+    tieredPricing: rate.tieredPricing,
   };
 }
 
@@ -212,15 +255,13 @@ export const playSessionService = {
     const checkInAt = this.resolveCheckInAt(input.checkInAt, now, resolveMaximumSessionHours(settings));
     const extras = await snapshotExtras(input.extras ?? [], actor, checkInAt);
 
-    // Read through the same resolver the session uses, so the snapshot is already
-    // normalised (grace 0 under PRORATA) rather than a raw copy of the package.
-    const packageRate = resolveSessionRate({
-      unitPrice: pkg.price,
-      rateDurationMinutes: pkg.durationMinutes,
-      pricingMode: resolvePricingMode(pkg),
-      graceMinutes: resolveGraceMinutes(pkg),
-      tieredPricing: resolveTieredPricing(pkg),
-    });
+    const packageRate = snapshotRate(pkg);
+    // Best price: every other active package in the chosen package's group, frozen now
+    // from the server's own packages - never from rates the device sent - so checkout can
+    // charge the cheapest without a later price edit reaching this child.
+    const alternativeRates = pkg.priceGroup
+      ? (await playPackageRepository.findActiveByPriceGroup(pkg.priceGroup, pkg._id)).map(snapshotRate)
+      : [];
 
     // Validation guarantees exactly one of the two is present.
     const childNames = input.childNames ?? [input.childName as string];
@@ -243,6 +284,7 @@ export const playSessionService = {
         graceMinutes: packageRate.graceMinutes,
         // The whole tier table, so a later edit to the package never reprices this child.
         tieredPricing: packageRate.tieredPricing,
+        alternativeRates,
         customerId: input.customer?.customerId ? new Types.ObjectId(input.customer.customerId) : null,
         parentName: input.customer?.parentName ?? '',
         phoneNumber: input.customer?.phoneNumber ?? '',

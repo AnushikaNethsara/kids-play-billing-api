@@ -18,6 +18,8 @@ export interface PlayPackagePublic {
   graceMinutes: number;
   /** Set on a TIERED_HOURLY package; null on every other package. */
   tieredPricing: TieredPricing | null;
+  /** Best-price group; null when the package is compared with nothing. */
+  priceGroup: string | null;
   isActive: boolean;
   description: string;
   sortOrder: number;
@@ -34,6 +36,7 @@ export interface CreatePlayPackageInput {
   pricingMode?: SessionPricingMode;
   graceMinutes?: number;
   tieredPricing?: TieredPricingInput;
+  priceGroup?: string | null;
   description?: string;
   sortOrder?: number;
 }
@@ -45,6 +48,7 @@ export interface UpdatePlayPackageInput {
   pricingMode?: SessionPricingMode;
   graceMinutes?: number;
   tieredPricing?: TieredPricingInput;
+  priceGroup?: string | null;
   description?: string;
   sortOrder?: number;
 }

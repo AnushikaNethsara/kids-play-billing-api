@@ -110,6 +110,34 @@ export interface SetTestBillInput {
   reason?: string;
 }
 
+/**
+ * An admin correction to a PAID bill - for when the money printed on it is not what was
+ * really collected. Line items are never part of it: they are what was sold. Every field
+ * other than the reason and expected revision is optional; at least one must change.
+ */
+export interface CorrectBillInput {
+  /** The bill's `revision` as the admin saw it. A stale value is rejected with a 409. */
+  expectedRevision: number;
+  reason: string;
+  /** What was actually received, integer minor units, at most the bill's charge. */
+  amountReceived?: number;
+  paymentMethod?: PaymentMethod;
+  customer?: {
+    parentName?: string;
+    phoneNumber?: string;
+  };
+  notes?: string;
+}
+
+export interface BillRevisionPublic {
+  revision: number;
+  editedAt: Date;
+  editedBy: string;
+  editedByName: string;
+  reason: string;
+  changes: Array<{ field: string; from: unknown; to: unknown }>;
+}
+
 export interface BillItemPublic {
   /** Always present here, resolved to PLAY on lines written before kinds existed. */
   kind: BillItemKind;
@@ -191,6 +219,13 @@ export interface BillPublic {
   testMarkedAt: Date | null;
   testMarkedBy: string | null;
   testReason: string | null;
+  /** Written off after payment by an admin correction; 0 on a bill never corrected. */
+  writeOff: number;
+  writeOffReason: string | null;
+  /** How many corrections the bill has had. Send it back as `expectedRevision`. */
+  revision: number;
+  lastEditedAt: Date | null;
+  lastEditedByName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

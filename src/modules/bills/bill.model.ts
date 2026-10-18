@@ -77,6 +77,27 @@ export interface BillItemSubdocument {
   tieredPricing: TieredPricing | null;
 }
 
+/** One field an admin correction changed, with its value before and after. */
+export interface BillRevisionChange {
+  field: string;
+  from: unknown;
+  to: unknown;
+}
+
+/**
+ * One admin correction to a paid bill. Embedded on the bill, and pushed in the same
+ * atomic update that applies the correction, so a bill can never change without its
+ * history recording it - there are no multi-document transactions to lean on here.
+ */
+export interface BillRevisionSubdocument {
+  revision: number;
+  editedAt: Date;
+  editedBy: Types.ObjectId;
+  editedByName: string;
+  reason: string;
+  changes: BillRevisionChange[];
+}
+
 export interface BillDocument {
   billNumber: string | null;
   status: BillStatus;
@@ -131,6 +152,23 @@ export interface BillDocument {
   testMarkedBy: Types.ObjectId | null;
   testReason: string | null;
 
+  /**
+   * Money an admin wrote off after payment because it was never actually collected - the
+   * customer paid short. Kept apart from `discount`, which is what the cashier gave at the
+   * till, so reports can tell a price concession from a correction. Integer minor units.
+   *
+   * Invariant: `grandTotal = subtotal - discount + tax - writeOff`. Absent (read as 0)
+   * on every bill that was never corrected.
+   */
+  writeOff: number;
+  writeOffReason: string | null;
+  /** How many admin corrections this bill has had. The compare-and-set key for the next. */
+  revision: number;
+  revisions: BillRevisionSubdocument[];
+  lastEditedAt: Date | null;
+  lastEditedBy: Types.ObjectId | null;
+  lastEditedByName: string | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -165,6 +203,26 @@ const billItemSchema = new Schema<BillItemSubdocument>(
     },
     graceMinutes: { type: Number, default: 0 },
     tieredPricing: { type: tieredPricingSchema, default: null },
+  },
+  { _id: false },
+);
+
+const billRevisionSchema = new Schema<BillRevisionSubdocument>(
+  {
+    revision: { type: Number, required: true },
+    editedAt: { type: Date, required: true },
+    editedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    editedByName: { type: String, required: true },
+    reason: { type: String, required: true },
+    changes: {
+      type: [
+        new Schema<BillRevisionChange>(
+          { field: { type: String, required: true }, from: Schema.Types.Mixed, to: Schema.Types.Mixed },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
   },
   { _id: false },
 );
@@ -209,6 +267,14 @@ const billSchema = new Schema<BillDocument>(
     testMarkedAt: { type: Date, default: null },
     testMarkedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     testReason: { type: String, default: null },
+
+    writeOff: { type: Number, default: 0 },
+    writeOffReason: { type: String, default: null },
+    revision: { type: Number, default: 0 },
+    revisions: { type: [billRevisionSchema], default: [] },
+    lastEditedAt: { type: Date, default: null },
+    lastEditedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    lastEditedByName: { type: String, default: null },
   },
   { timestamps: true },
 );

@@ -128,6 +128,30 @@ export const setTestBillSchema = z.object({
   reason: z.string().trim().max(300).optional(),
 });
 
+export const correctBillSchema = z
+  .object({
+    expectedRevision: z.number().int().min(0),
+    reason: z.string().trim().min(5, 'Explain the correction in at least 5 characters').max(300),
+    amountReceived: z.number().int().min(0).optional(),
+    paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+    customer: z
+      .object({
+        parentName: z.string().trim().max(100).optional(),
+        phoneNumber: phoneNumberInputSchema.optional(),
+      })
+      .optional(),
+    notes: z.string().trim().max(500).optional(),
+  })
+  .refine(
+    (data) =>
+      data.amountReceived !== undefined ||
+      data.paymentMethod !== undefined ||
+      data.notes !== undefined ||
+      data.customer?.parentName !== undefined ||
+      data.customer?.phoneNumber !== undefined,
+    { message: 'At least one field to correct is required' },
+  );
+
 export const listBillsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),

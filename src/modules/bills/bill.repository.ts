@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { BillModel, type BillHydrated, type BillDocument } from './bill.model';
+import { BillModel, type BillHydrated, type BillDocument, type BillRevisionSubdocument } from './bill.model';
 import { getSkip } from '../../common/utils/pagination';
 import { escapeRegExp } from '../../common/utils/regex';
 import { phoneSearchDigits } from '../../common/utils/phone';
@@ -72,6 +72,31 @@ export const billRepository = {
     ).exec();
   },
 
+  /**
+   * Applies an admin correction to a PAID bill and appends its history entry in one
+   * atomic write - compare-and-set on both the status and the revision the admin was
+   * looking at. Two admins correcting the same bill, or a double-submitted form, cannot
+   * overwrite each other: the second matches nothing and gets null.
+   *
+   * A bill never corrected has no `revision` field at all, which `null` matches.
+   */
+  async applyCorrectionIfRevision(
+    id: string,
+    expectedRevision: number,
+    update: Partial<BillDocument>,
+    entry: BillRevisionSubdocument,
+  ): Promise<BillHydrated | null> {
+    return BillModel.findOneAndUpdate(
+      {
+        _id: id,
+        status: BillStatus.PAID,
+        revision: expectedRevision === 0 ? { $in: [0, null] } : expectedRevision,
+      },
+      { $set: update, $inc: { revision: 1 }, $push: { revisions: entry } },
+      { new: true },
+    ).exec();
+  },
+
   async list(
     filter: ListBillsQuery,
   ): Promise<{ bills: BillHydrated[]; total: number }> {
@@ -131,6 +156,8 @@ export const billRepository = {
 
     const [bills, total] = await Promise.all([
       BillModel.find(mongoFilter)
+        // The correction history is only ever read from the bill's own endpoint.
+        .select('-revisions')
         .sort(sort)
         .skip(getSkip(filter))
         .limit(filter.limit)

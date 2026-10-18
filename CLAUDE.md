@@ -91,6 +91,13 @@ reports must never recompute from the current `PlayPackage` price.
   Marking also unwinds the customer's `visitCount`/`totalSpent` and denormalises the flag
   onto the bill's play sessions, since session metrics read `PlaySessionModel` directly.
   Nothing about the bill's money, number or receipt changes.
+- **Corrections**: `POST /bills/:id/corrections` (admin) corrects a PAID bill's amount
+  received, payment method, customer or notes - never its lines, number or `paidAt`. A
+  shortfall goes to `Bill.writeOff` (not `discount`), keeping
+  `grandTotal = subtotal - discount + tax - writeOff`. The history is embedded
+  (`revisions[]`) and pushed in the same compare-and-set write
+  (`bill.repository.ts#applyCorrectionIfRevision`, keyed on `revision`), since there are
+  no transactions. See `../docs/bill-corrections.md`.
 - **Discount cap**: `billCalculator.ts#validateDiscountPermission` caps cashiers at
   `BusinessSettings.maximumCashierDiscountPercentage`; admins are uncapped. Discounts
   above that threshold get an audit log entry regardless of role.
@@ -108,7 +115,7 @@ All date bucketing/filtering uses `BusinessSettings.timezone` (default `Asia/Col
 resolved via `common/utils/dateRange.ts#resolveDateRange` - never server-local time.
 "Revenue recognized" bills are `PAID` + `REFUNDED` (a refund is a reversal of a real
 transaction, not its absence); `netRevenue = grossRevenue(sum subtotal) - discounts -
-refunds`.
+writeOffs - refunds` (`BILL_WRITE_OFF` in `billFilters.ts`).
 
 ### Receipts
 

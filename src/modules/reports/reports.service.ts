@@ -28,6 +28,7 @@ import { ValidationError } from '../../common/errors';
 import type { AuthenticatedUser } from '../../common/types/express';
 import { maskPhone } from './reports.csv';
 import { toLocalPhone } from '../../common/utils/phone';
+import { formatMoney } from '../../common/utils/money';
 import { getPeriodSummary } from './periodSummary';
 import { getCustomerReport } from './customerReport';
 import {
@@ -574,7 +575,9 @@ export const reportsService = {
           actorName: bill.cashierName,
           cashierName: bill.cashierName,
           reason: '',
-          detail: percentOf(bill.discount, bill.subtotal),
+          detail: (bill.multiChildDiscount ?? 0) > 0
+            ? `${percentOf(bill.discount, bill.subtotal)} - incl. ${bill.multiChildDiscountPercentage}% multi-child (${formatMoney(bill.multiChildDiscount)})`
+            : percentOf(bill.discount, bill.subtotal),
         }),
       ),
       ...refunded.map(

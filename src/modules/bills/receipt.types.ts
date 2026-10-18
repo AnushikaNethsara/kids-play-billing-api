@@ -66,7 +66,12 @@ export interface ReceiptData {
     parentName: string;
     items: ReceiptItem[];
     subtotal: number;
+    /** Every discount on the bill; the manual part is `discount - multiChildDiscount`. */
     discount: number;
+    /** The automatic multi-child discount, with the rule it was applied under. */
+    multiChildDiscount: number;
+    multiChildDiscountPercentage: number;
+    multiChildCount: number;
     tax: number;
     /** Written off by an admin correction after payment; 0 on a bill never corrected. */
     writeOff: number;

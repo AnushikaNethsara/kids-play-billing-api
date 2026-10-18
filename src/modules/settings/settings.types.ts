@@ -1,4 +1,4 @@
-import type { PaperWidth } from './settings.model';
+import type { MultiChildDiscountTier, PaperWidth } from './settings.model';
 
 export interface UpdateSettingsInput {
   businessName?: string;
@@ -23,6 +23,8 @@ export interface UpdateSettingsInput {
   showLogoOnReceipt?: boolean;
   /** Every Nth visit is flagged as reward due. 0 = off. */
   loyaltyVisitInterval?: number;
+  /** Automatic play-time discount by children on the bill. Empty = off. */
+  multiChildDiscountTiers?: MultiChildDiscountTier[];
 }
 
 export interface BusinessSettingsPublic extends UpdateSettingsInput {
@@ -47,5 +49,6 @@ export interface BusinessSettingsPublic extends UpdateSettingsInput {
   logoRasterHeightDots: number;
   showLogoOnReceipt: boolean;
   loyaltyVisitInterval: number;
+  multiChildDiscountTiers: MultiChildDiscountTier[];
   updatedAt: Date;
 }

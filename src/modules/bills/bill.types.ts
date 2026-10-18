@@ -203,6 +203,11 @@ export interface BillPublic {
   discount: number;
   discountType: DiscountType;
   discountValue: number;
+  /** The automatic multi-child part of `discount`; 0 when it did not apply. */
+  multiChildDiscount: number;
+  multiChildDiscountPercentage: number;
+  /** Children on play the multi-child discount counted. */
+  multiChildCount: number;
   tax: number;
   grandTotal: number;
   paidAmount: number;

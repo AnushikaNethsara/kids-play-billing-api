@@ -3,6 +3,7 @@ import {
   resolveLoyaltyVisitInterval,
   resolveMaximumSessionHours,
   resolveMinimumBillableMinutes,
+  resolveMultiChildTiers,
 } from './settings.model';
 import type { UpdateSettingsInput, BusinessSettingsPublic } from './settings.types';
 import { auditLogService } from '../audit-logs/auditLog.service';
@@ -32,6 +33,7 @@ function toPublic(settings: Awaited<ReturnType<typeof settingsRepository.getOrCr
     logoRasterHeightDots: settings.logoRasterHeightDots ?? 0,
     showLogoOnReceipt: settings.showLogoOnReceipt ?? false,
     loyaltyVisitInterval: resolveLoyaltyVisitInterval(settings),
+    multiChildDiscountTiers: resolveMultiChildTiers(settings),
     updatedAt: settings.updatedAt,
   };
 }

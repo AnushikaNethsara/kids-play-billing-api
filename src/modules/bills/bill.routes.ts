@@ -12,6 +12,7 @@ import {
   cancelBillSchema,
   refundBillSchema,
   setTestBillSchema,
+  correctBillSchema,
   listBillsQuerySchema,
   billIdParamSchema,
   billNumberParamSchema,
@@ -351,6 +352,84 @@ router.post(
   requireRole(UserRole.ADMIN),
   validate({ params: billIdParamSchema, body: setTestBillSchema }),
   asyncHandler(billController.setTestFlag),
+);
+
+/**
+ * @openapi
+ * /bills/{id}/corrections:
+ *   post:
+ *     summary: Correct a paid bill - amount received, payment method, customer, notes (admin-only)
+ *     description: >
+ *       For a paid bill whose printed amount was not what was really collected, or whose
+ *       payment details were recorded wrongly. Line items, subtotal, discount and tax never
+ *       change. A shortfall is written off as `writeOff`, so
+ *       `grandTotal = subtotal - discount + tax - writeOff`. The bill number and `paidAt`
+ *       never change. Every correction is appended to the bill's revision history in the
+ *       same atomic write, and audited.
+ *
+ *       `expectedRevision` is the bill's `revision` as loaded. A stale one is rejected with
+ *       a 409, so two admins cannot overwrite each other.
+ *     tags: [Bills]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [expectedRevision, reason]
+ *             properties:
+ *               expectedRevision: { type: integer, minimum: 0 }
+ *               reason: { type: string, minLength: 5, maxLength: 300 }
+ *               amountReceived:
+ *                 type: integer
+ *                 description: Minor units actually collected; at most subtotal - discount + tax
+ *               paymentMethod: { type: string, enum: [CASH, CARD, BANK_TRANSFER, OTHER] }
+ *               customer:
+ *                 type: object
+ *                 properties:
+ *                   parentName: { type: string }
+ *                   phoneNumber: { type: string }
+ *               notes: { type: string }
+ *     responses:
+ *       200: { description: Bill corrected }
+ *       403: { description: Only admins may correct bills }
+ *       409: { description: Bill is not paid, or was changed since it was loaded }
+ *       400: { description: Nothing would change, or the reason is missing }
+ *       422: { description: The amount received is more than the bill charged }
+ */
+router.post(
+  '/:id/corrections',
+  requireRole(UserRole.ADMIN),
+  validate({ params: billIdParamSchema, body: correctBillSchema }),
+  asyncHandler(billController.correct),
+);
+
+/**
+ * @openapi
+ * /bills/{id}/revisions:
+ *   get:
+ *     summary: The correction history of a bill, newest first (admin-only)
+ *     tags: [Bills]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Revision entries - who, when, why, and each field from and to }
+ */
+router.get(
+  '/:id/revisions',
+  requireRole(UserRole.ADMIN),
+  validate({ params: billIdParamSchema }),
+  asyncHandler(billController.revisions),
 );
 
 /**

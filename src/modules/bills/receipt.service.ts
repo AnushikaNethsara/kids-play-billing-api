@@ -177,10 +177,14 @@ export const receiptService = {
         subtotal: bill.subtotal,
         discount: bill.discount,
         tax: bill.tax,
+        writeOff: bill.writeOff ?? 0,
         grandTotal: bill.grandTotal,
         paidAmount: bill.paidAmount,
         balance: bill.balance,
         paymentMethod: bill.paymentMethod,
+        correctedDate: bill.lastEditedAt
+          ? DateTime.fromJSDate(bill.lastEditedAt).setZone(settings.timezone).toFormat('yyyy-MM-dd')
+          : null,
       },
       receipt: {
         paperWidth: settings.receiptPaperWidth,
@@ -312,10 +316,17 @@ export const receiptService = {
     if (data.bill.tax > 0) {
       lines.push(twoColumnLine('Tax', formatMoney(data.bill.tax), width));
     }
+    if (data.bill.writeOff > 0) {
+      lines.push(twoColumnLine('Write-off', `-${formatMoney(data.bill.writeOff)}`, width));
+    }
     lines.push(twoColumnLine('TOTAL', formatMoney(data.bill.grandTotal), width));
     lines.push(twoColumnLine('Paid', formatMoney(data.bill.paidAmount), width));
     lines.push(twoColumnLine('Balance', formatMoney(data.bill.balance), width));
     if (data.bill.paymentMethod) lines.push(`Payment: ${data.bill.paymentMethod}`);
+    if (data.bill.correctedDate) {
+      const corrected = DateTime.fromFormat(data.bill.correctedDate, 'yyyy-MM-dd');
+      lines.push(...wrapText(`Corrected ${corrected.toFormat('dd/MM/yyyy')}`, width));
+    }
     lines.push(dashLine(width));
 
     lines.push(centerText(data.receipt.footer, width));

@@ -123,6 +123,17 @@ export const playSessionRepository = {
   },
 
   /**
+   * Moves every session a bill paid for to another customer (or to none), after an admin
+   * corrected the phone number on the bill. Unlike setCustomerIdByBillId this overwrites.
+   */
+  async reassignCustomerByBillId(billId: Types.ObjectId | string, customerId: string | null): Promise<void> {
+    await PlaySessionModel.updateMany(
+      { billId: new Types.ObjectId(billId) },
+      { $set: { customerId: customerId ? new Types.ObjectId(customerId) : null } },
+    ).exec();
+  },
+
+  /**
    * Propagates a bill's test flag to the sessions it billed. Called only from the bill
    * service - the session's copy of the flag is a denormalisation of the bill's, never an
    * independent decision.

@@ -64,6 +64,7 @@ export const ExceptionType = {
   VOID: 'VOID',
   FORCE_CLOSE: 'FORCE_CLOSE',
   LATE_PAYMENT: 'LATE_PAYMENT',
+  BILL_CORRECTION: 'BILL_CORRECTION',
 } as const;
 
 export type ExceptionType = (typeof ExceptionType)[keyof typeof ExceptionType];
@@ -107,7 +108,11 @@ export interface BillRegisterRow {
   subtotal: number;
   discount: number;
   tax: number;
+  /** Written off by admin corrections after payment. */
+  writeOff: number;
   grandTotal: number;
+  /** How many times an admin corrected the bill after payment. */
+  revision: number;
   refundedAt: Date | null;
   cancelledAt: Date | null;
   reason: string;
@@ -137,6 +142,8 @@ export interface BillRegisterTotals {
   billCount: number;
   grossRevenue: number;
   discounts: number;
+  /** Written off paid bills by admin corrections - money never collected. */
+  writeOffs: number;
   refunds: number;
   netRevenue: number;
   tax: number;
@@ -149,7 +156,7 @@ export interface BillRegisterTotals {
 export interface DailyCloseAdjustment {
   billId: string;
   billNumber: string | null;
-  action: 'CANCELLED' | 'REFUNDED';
+  action: 'CANCELLED' | 'REFUNDED' | 'CORRECTED';
   amount: number;
   occurredAt: Date;
   actorName: string;
@@ -177,7 +184,9 @@ export interface DailyCloseReport {
     cashierName: string;
   }>;
   /**
-   * Bills paid on this day that were cancelled or refunded after it ended. The totals
+   * Bills paid on this day that were cancelled, refunded or corrected after it ended. A
+   * correction's `amount` is the change to the bill's grand total (negative for a
+   * write-off, 0 for a payment-method or detail change). The totals
    * above are recalculated live and already reflect these, so a reprint can differ from
    * the copy printed at closing time; this list is what explains the difference.
    */
@@ -261,6 +270,8 @@ export interface PeriodBucket {
   childrenCount: number;
   grossRevenue: number;
   discounts: number;
+  /** Written off paid bills by admin corrections - money never collected. */
+  writeOffs: number;
   refunds: number;
   netRevenue: number;
   /** Tax on PAID and REFUNDED bills: cash + card + bank + other = net + tax. */

@@ -23,6 +23,13 @@ export const EXCLUDE_TEST_BILLS = { isTestBill: { $ne: true } } as const;
 export const EXCLUDE_TEST_SESSIONS = { isTestBill: { $ne: true } } as const;
 
 /**
+ * What an admin wrote off a paid bill after the fact because it was never collected - see
+ * `Bill.writeOff`. Absent on every bill never corrected. Net revenue subtracts it beside
+ * discounts, so `cash + card + bank + other = net + tax` keeps holding after a correction.
+ */
+export const BILL_WRITE_OFF = { $ifNull: ['$writeOff', 0] } as const;
+
+/**
  * Revenue-recognized bills are those that were actually paid for at some point - PAID
  * and REFUNDED both count, since a refund is a reversal of a real transaction, not the
  * absence of one. CANCELLED bills never entered revenue and are tracked separately.

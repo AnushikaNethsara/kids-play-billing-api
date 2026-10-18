@@ -98,6 +98,12 @@ reports must never recompute from the current `PlayPackage` price.
   (`revisions[]`) and pushed in the same compare-and-set write
   (`bill.repository.ts#applyCorrectionIfRevision`, keyed on `revision`), since there are
   no transactions. See `../docs/bill-corrections.md`.
+- **Best price**: `priceSessionBestOf` (billCalculator.ts) prices a session under its chosen
+  rate and the comparable rates frozen onto it at check-in (`PlaySession.alternativeRates`,
+  from packages sharing `priceGroup`), and charges the cheapest. A tie keeps the chosen
+  package. Both `quoteSession` and checkout call it. The bill line carries the *charged*
+  package (the receipt prints it unchanged); `chosen*` line fields are admin-only. See
+  `../docs/best-price.md`.
 - **Discount cap**: `billCalculator.ts#validateDiscountPermission` caps cashiers at
   `BusinessSettings.maximumCashierDiscountPercentage`; admins are uncapped. Discounts
   above that threshold get an audit log entry regardless of role.

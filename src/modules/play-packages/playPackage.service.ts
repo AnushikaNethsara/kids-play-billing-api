@@ -38,6 +38,7 @@ function toPublic(pkg: PlayPackageHydrated): PlayPackagePublic {
     pricingMode: resolvePricingMode(pkg),
     graceMinutes: resolveGraceMinutes(pkg),
     tieredPricing: resolveTieredPricing(pkg),
+    priceGroup: pkg.priceGroup ?? null,
     isActive: pkg.isActive,
     description: pkg.description,
     sortOrder: pkg.sortOrder,
@@ -100,6 +101,7 @@ export const playPackageService = {
       pricingMode,
       graceMinutes,
       tieredPricing,
+      priceGroup: input.priceGroup ?? null,
       description: input.description ?? '',
       sortOrder: input.sortOrder ?? 0,
       createdBy: actor.id,
@@ -182,6 +184,7 @@ export const playPackageService = {
       pkg.durationMinutes = TIER_MINUTES;
       pkg.price = mergedTiered.hourlyRates[0];
     }
+    if (input.priceGroup !== undefined) pkg.priceGroup = input.priceGroup;
     if (input.description !== undefined) pkg.description = input.description;
     if (input.sortOrder !== undefined) pkg.sortOrder = input.sortOrder;
     pkg.updatedBy = new Types.ObjectId(actor.id);

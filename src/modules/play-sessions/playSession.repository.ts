@@ -47,6 +47,9 @@ export const playSessionRepository = {
       billedMinutes: number;
       /** Frozen in the same atomic write as billedMinutes, so the two can never disagree. */
       chargedAmount: number;
+      /** Set when best price charged a package other than the chosen one. */
+      chargedPlayPackageId: Types.ObjectId | null;
+      chargedPackageName: string | null;
       checkOutCashierId: Types.ObjectId;
       checkOutCashierName: string;
     },
@@ -75,6 +78,9 @@ export const playSessionRepository = {
           // session left carrying one after its bill was cancelled would keep reporting
           // revenue that was reversed - and would double-count once it is billed again.
           chargedAmount: null,
+          // Re-decided at the next checkout, from a longer stay.
+          chargedPlayPackageId: null,
+          chargedPackageName: null,
           billId: null,
           checkOutCashierId: null,
           checkOutCashierName: null,

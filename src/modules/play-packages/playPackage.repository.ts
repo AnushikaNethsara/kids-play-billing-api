@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { PlayPackageModel, type PlayPackageHydrated } from './playPackage.model';
 import type { SessionPricingMode, TieredPricing } from '../../common/constants/pricingModes';
 import { getSkip } from '../../common/utils/pagination';
@@ -14,6 +15,7 @@ export const playPackageRepository = {
     pricingMode: SessionPricingMode;
     graceMinutes: number;
     tieredPricing: TieredPricing | null;
+    priceGroup: string | null;
     description: string;
     sortOrder: number;
     createdBy: string;
@@ -38,6 +40,13 @@ export const playPackageRepository = {
     ]);
 
     return { packages, total };
+  },
+
+  /** The other active packages in a best-price group, in display order. */
+  async findActiveByPriceGroup(priceGroup: string, excludeId: Types.ObjectId): Promise<PlayPackageHydrated[]> {
+    return PlayPackageModel.find({ priceGroup, isActive: true, _id: { $ne: excludeId } })
+      .sort({ sortOrder: 1, durationMinutes: 1 })
+      .exec();
   },
 
   async listAllActive(): Promise<PlayPackageHydrated[]> {

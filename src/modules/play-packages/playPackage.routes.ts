@@ -69,6 +69,12 @@ router.use(authenticate);
  *                     default: 0
  *                     description: Rounds the session total to this many minor units. 0 means no rounding.
  *                   roundingMode: { type: string, enum: [UP, DOWN, NEAREST], default: NEAREST }
+ *               priceGroup:
+ *                 type: string
+ *                 nullable: true
+ *                 description: >
+ *                   Best-price group. Active packages in the same group are compared at
+ *                   checkout and the cheapest is charged. Blank or null compares nothing.
  *               description: { type: string }
  *               sortOrder: { type: integer }
  *     responses:

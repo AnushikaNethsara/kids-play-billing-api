@@ -29,24 +29,70 @@ router.use(authenticate);
  *     responses:
  *       201: { description: Customer created }
  *   get:
- *     summary: List customers with pagination and search
+ *     summary: List customers with search, segment and visit filters
+ *     description: >
+ *       Dates are business dates (YYYY-MM-DD) in the business timezone, both ends
+ *       inclusive, and either end may be given alone. A visit is one business day with a
+ *       paid or refunded, non-test bill with play time on it. Segments are relative to
+ *       today - new (first visit in the last 30 days), one_time (a single visit, more than
+ *       30 days ago), returning (2+ visits), regular (4+ visits in the last 90 days),
+ *       at_risk (returning, last seen 45-180 days ago), lost (last seen over 180 days
+ *       ago), never (no visit yet). Amounts are integer minor units.
  *     tags: [Customers]
  *     security: [{ bearerAuth: [] }]
  *     parameters:
+ *       - { in: query, name: page, schema: { type: integer, default: 1 } }
+ *       - { in: query, name: limit, schema: { type: integer, default: 20 } }
+ *       - { in: query, name: search, schema: { type: string } }
  *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
+ *         name: segment
+ *         schema: { type: string, enum: [new, one_time, returning, regular, at_risk, lost, never] }
+ *       - { in: query, name: minVisits, schema: { type: integer, minimum: 0 } }
+ *       - { in: query, name: maxVisits, schema: { type: integer, minimum: 0 } }
+ *       - { in: query, name: minSpent, schema: { type: integer, minimum: 0 } }
+ *       - { in: query, name: maxSpent, schema: { type: integer, minimum: 0 } }
+ *       - { in: query, name: lastVisitFrom, schema: { type: string, format: date } }
+ *       - { in: query, name: lastVisitTo, schema: { type: string, format: date } }
+ *       - { in: query, name: firstVisitFrom, schema: { type: string, format: date } }
+ *       - { in: query, name: firstVisitTo, schema: { type: string, format: date } }
+ *       - { in: query, name: joinedFrom, schema: { type: string, format: date } }
+ *       - { in: query, name: joinedTo, schema: { type: string, format: date } }
+ *       - { in: query, name: visitedFrom, schema: { type: string, format: date } }
+ *       - { in: query, name: visitedTo, schema: { type: string, format: date } }
+ *       - { in: query, name: hasPhone, schema: { type: boolean } }
+ *       - { in: query, name: hasEmail, schema: { type: boolean } }
  *       - in: query
- *         name: limit
- *         schema: { type: integer, default: 20 }
- *       - in: query
- *         name: search
- *         schema: { type: string }
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [createdAt, lastVisitAt, firstVisitAt, visitCount, totalSpent, parentName]
+ *           default: createdAt
+ *       - { in: query, name: order, schema: { type: string, enum: [asc, desc], default: desc } }
  *     responses:
  *       200: { description: Paginated list of customers }
+ *       400: { description: Invalid filter, or a range that runs backwards }
  */
 router.post('/', validate({ body: createCustomerSchema }), asyncHandler(customerController.create));
 router.get('/', validate({ query: listCustomersQuerySchema }), asyncHandler(customerController.list));
+
+/**
+ * @openapi
+ * /customers/segments:
+ *   get:
+ *     summary: Number of customers in each segment right now (admin-only)
+ *     description: >
+ *       Counts for the customer list's segment tabs, plus `all`. Ignores every other list
+ *       filter. Segments overlap, so they do not add up to `all`.
+ *     tags: [Customers]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: "Counts: all, new, one_time, returning, regular, at_risk, lost, never" }
+ */
+router.get(
+  '/segments',
+  requireRole(UserRole.ADMIN),
+  asyncHandler(customerController.segmentCounts),
+);
 
 /**
  * @openapi

@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "tsx scripts/seed.ts",
-    "customers:cleanup": "tsx scripts/customer-cleanup.ts"
+    "customers:cleanup": "tsx scripts/customer-cleanup.ts",
+    "customers:recompute": "tsx scripts/customer-recompute.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

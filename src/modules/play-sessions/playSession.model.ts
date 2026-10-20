@@ -33,6 +33,21 @@ export interface PlaySessionExtraSubdocument {
   addedByCashierName: string;
 }
 
+/**
+ * A comparable package's rate, frozen onto a ticket at check-in for best-price checkout -
+ * see docs/best-price.md. The same five pricing inputs the ticket carries for its chosen
+ * package, under the same snapshot rule: a later price edit never reprices this child.
+ */
+export interface SessionAlternativeRate {
+  playPackageId: Types.ObjectId;
+  packageName: string;
+  rateDurationMinutes: number;
+  unitPrice: number;
+  pricingMode: SessionPricingMode;
+  graceMinutes: number;
+  tieredPricing: TieredPricing | null;
+}
+
 export interface PlaySessionDocument {
   /**
    * The value encoded in the printed QR ticket. Generated on the cashier's device so a
@@ -76,6 +91,12 @@ export interface PlaySessionDocument {
   graceMinutes: number;
   /** The hourly rates, overtime and rounding. Set only on a TIERED_HOURLY session. */
   tieredPricing: TieredPricing | null;
+  /**
+   * The other packages in the chosen package's best-price group, as they were at
+   * check-in. Checkout charges whichever of these and the chosen rate is cheapest.
+   * Empty on a package with no group, and absent on tickets from before best price.
+   */
+  alternativeRates: SessionAlternativeRate[];
 
   customerId: Types.ObjectId | null;
   parentName: string;
@@ -100,6 +121,12 @@ export interface PlaySessionDocument {
    * every session closed before this existed, which the pipeline falls back for.
    */
   chargedAmount: number | null;
+  /**
+   * The package `chargedAmount` was priced under, when best price picked one other than
+   * the chosen package. Null when the chosen package was cheapest, and while playing.
+   */
+  chargedPlayPackageId: Types.ObjectId | null;
+  chargedPackageName: string | null;
   billId: Types.ObjectId | null;
 
   checkInCashierId: Types.ObjectId;
@@ -143,6 +170,23 @@ const playSessionExtraSchema = new Schema<PlaySessionExtraSubdocument>(
   { _id: false },
 );
 
+const sessionAlternativeRateSchema = new Schema<SessionAlternativeRate>(
+  {
+    playPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', required: true },
+    packageName: { type: String, required: true },
+    rateDurationMinutes: { type: Number, required: true, min: 1 },
+    unitPrice: { type: Number, required: true, min: 0 },
+    pricingMode: {
+      type: String,
+      enum: Object.values(SessionPricingMode),
+      default: DEFAULT_SESSION_PRICING_MODE,
+    },
+    graceMinutes: { type: Number, default: 0, min: 0 },
+    tieredPricing: { type: tieredPricingSchema, default: null },
+  },
+  { _id: false },
+);
+
 const playSessionSchema = new Schema<PlaySessionDocument>(
   {
     ticketCode: { type: String, required: true, trim: true },
@@ -166,6 +210,7 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     },
     graceMinutes: { type: Number, default: 0, min: 0 },
     tieredPricing: { type: tieredPricingSchema, default: null },
+    alternativeRates: { type: [sessionAlternativeRateSchema], default: [] },
 
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', default: null },
     parentName: { type: String, default: '' },
@@ -176,6 +221,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     checkOutAt: { type: Date, default: null },
     billedMinutes: { type: Number, default: null },
     chargedAmount: { type: Number, default: null },
+    chargedPlayPackageId: { type: Schema.Types.ObjectId, ref: 'PlayPackage', default: null },
+    chargedPackageName: { type: String, default: null },
     billId: { type: Schema.Types.ObjectId, ref: 'Bill', default: null },
 
     checkInCashierId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -246,6 +293,36 @@ export function resolveSessionRate(
         : 0,
     tieredPricing: pricingMode === SessionPricingMode.TIERED_HOURLY ? tieredPricing : null,
   };
+}
+
+/** A rate as `priceSession` expects it, tagged with the package it belongs to. */
+export type NamedSessionRate = ReturnType<typeof resolveSessionRate> & {
+  playPackageId: Types.ObjectId;
+  packageName: string;
+};
+
+/**
+ * Every rate best-price checkout compares, chosen package first - the order
+ * `priceSessionBestOf` relies on for its tie rule. A ticket from before best price, or
+ * on a package with no group, answers just its own rate and prices exactly as before.
+ */
+export function resolveSessionRates(
+  session: Pick<PlaySessionDocument, 'playPackageId' | 'packageName' | 'unitPrice' | 'rateDurationMinutes'> &
+    Partial<Pick<PlaySessionDocument, 'pricingMode' | 'graceMinutes' | 'tieredPricing' | 'alternativeRates'>>,
+): [NamedSessionRate, ...NamedSessionRate[]] {
+  const chosen: NamedSessionRate = {
+    ...resolveSessionRate(session),
+    playPackageId: session.playPackageId,
+    packageName: session.packageName,
+  };
+  const alternatives = (session.alternativeRates ?? []).map(
+    (alternative): NamedSessionRate => ({
+      ...resolveSessionRate(alternative),
+      playPackageId: alternative.playPackageId,
+      packageName: alternative.packageName,
+    }),
+  );
+  return [chosen, ...alternatives];
 }
 
 /**

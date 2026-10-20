@@ -14,6 +14,7 @@ import type {
   CancelBillInput,
   RefundBillInput,
   SetTestBillInput,
+  CorrectBillInput,
   ListBillsQuery,
 } from './bill.types';
 
@@ -134,6 +135,16 @@ export const billController = {
         ? 'Bill marked as a test bill and excluded from reporting'
         : 'Bill restored to normal reporting',
     });
+  },
+
+  async correct(req: Request, res: Response): Promise<void> {
+    const actor = requireActor(req);
+    const bill = await billService.correctPaidBill(req.params.id, req.body as CorrectBillInput, actor);
+    sendSuccess(res, bill, { message: 'Bill corrected successfully' });
+  },
+
+  async revisions(req: Request, res: Response): Promise<void> {
+    sendSuccess(res, await billService.getRevisions(req.params.id));
   },
 
   async receipt(req: Request, res: Response): Promise<void> {

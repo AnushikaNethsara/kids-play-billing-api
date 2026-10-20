@@ -4,10 +4,16 @@ import { billNumberService } from './billNumber.service';
 import { playPackageRepository } from '../play-packages/playPackage.repository';
 import { customerService } from '../customers/customer.service';
 import { settingsService } from '../settings/settings.service';
-import { resolveMinimumBillableMinutes } from '../settings/settings.model';
+import { resolveMinimumBillableMinutes, resolveMultiChildTiers } from '../settings/settings.model';
 import { playSessionRepository } from '../play-sessions/playSession.repository';
 import { productRepository } from '../products/product.repository';
-import { resolveChildCount, resolveChildNames, resolveSessionRate } from '../play-sessions/playSession.model';
+import {
+  resolveChildCount,
+  resolveChildNames,
+  resolveSessionRate,
+  resolveSessionRates,
+  type NamedSessionRate,
+} from '../play-sessions/playSession.model';
 import type { PlaySessionHydrated } from '../play-sessions/playSession.model';
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { auditLogService } from '../audit-logs/auditLog.service';
@@ -32,12 +38,19 @@ import {
   calculateBillTotals,
   checkoutTimeOf,
   isDiscountAboveThreshold,
+  multiChildPercentage,
+  playChildrenOnItems,
   priceGroupVisit,
   priceSession,
-  priceSessionForPeriod,
+  priceSessionBestOf,
   validateDiscountPermission,
 } from './billCalculator';
-import type { BillHydrated, BillItemSubdocument } from './bill.model';
+import type {
+  BillDocument,
+  BillHydrated,
+  BillItemSubdocument,
+  BillRevisionChange,
+} from './bill.model';
 import type {
   BillPublic,
   BillItemPublic,
@@ -52,6 +65,8 @@ import type {
   CancelBillInput,
   RefundBillInput,
   SetTestBillInput,
+  CorrectBillInput,
+  BillRevisionPublic,
   ListBillsQuery,
 } from './bill.types';
 import type { AuthenticatedUser } from '../../common/types/express';
@@ -113,6 +128,9 @@ function toPublicItem(item: BillItemSubdocument): BillItemPublic {
     rawTotal: pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.rawTotal ?? null) : null,
     roundingAdjustment:
       pricingMode === SessionPricingMode.TIERED_HOURLY ? (breakdown?.roundingAdjustment ?? null) : null,
+    chosenPlayPackageId: item.chosenPlayPackageId ? item.chosenPlayPackageId.toString() : null,
+    chosenPackageName: item.chosenPackageName ?? null,
+    chosenLineTotal: item.chosenLineTotal ?? null,
   };
 }
 
@@ -129,6 +147,9 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     discount: bill.discount,
     discountType: bill.discountType,
     discountValue: bill.discountValue,
+    multiChildDiscount: bill.multiChildDiscount ?? 0,
+    multiChildDiscountPercentage: bill.multiChildDiscountPercentage ?? 0,
+    multiChildCount: bill.multiChildCount ?? 0,
     tax: bill.tax,
     grandTotal: bill.grandTotal,
     paidAmount: bill.paidAmount,
@@ -153,6 +174,12 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     testMarkedAt: bill.testMarkedAt ?? null,
     testMarkedBy: bill.testMarkedBy ? bill.testMarkedBy.toString() : null,
     testReason: bill.testReason ?? null,
+    // A bill never corrected has none of these fields.
+    writeOff: bill.writeOff ?? 0,
+    writeOffReason: bill.writeOffReason ?? null,
+    revision: bill.revision ?? 0,
+    lastEditedAt: bill.lastEditedAt ?? null,
+    lastEditedByName: bill.lastEditedByName ?? null,
     createdAt: bill.createdAt,
     updatedAt: bill.updatedAt,
   };
@@ -195,6 +222,10 @@ const NO_SESSION = {
   pricingMode: SessionPricingMode.PRORATA,
   graceMinutes: 0,
   tieredPricing: null,
+  // Best price compares timed rates only, so it never touches a line like this.
+  chosenPlayPackageId: null,
+  chosenPackageName: null,
+  chosenLineTotal: null,
 } as const;
 
 /**
@@ -389,6 +420,60 @@ async function releaseClaimedSessions(sessions: PlaySessionHydrated[]): Promise<
   }
 }
 
+/**
+ * Prices a draft: the automatic multi-child discount from the current tiers, then the
+ * cashier's discount on what is left, then tax. The cashier cap is checked against the
+ * manual discount alone - it limits what a cashier gives, and the automatic discount is the
+ * business's own rule, never the cashier's. The percentage is returned so the draft can
+ * snapshot it: completion reuses it, so a tier edited mid-checkout changes nothing.
+ */
+function priceDraft(
+  items: BillItemSubdocument[],
+  discountType: DiscountType,
+  discountValue: number,
+  actor: AuthenticatedUser,
+  settings: Awaited<ReturnType<typeof settingsService.getRaw>>,
+) {
+  const multiChildCount = playChildrenOnItems(items);
+  const percentage = multiChildPercentage(resolveMultiChildTiers(settings), multiChildCount);
+
+  const beforeManual = calculateBillTotals({
+    items,
+    discountType: DiscountType.NONE,
+    discountValue: 0,
+    taxEnabled: false,
+    taxPercentage: 0,
+    multiChildPercentage: percentage,
+  });
+
+  validateDiscountPermission({
+    role: actor.role,
+    subtotal: beforeManual.subtotal - beforeManual.multiChildDiscount,
+    discountType,
+    discountValue,
+    maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
+  });
+
+  const totals = calculateBillTotals({
+    items,
+    discountType,
+    discountValue,
+    taxEnabled: settings.taxEnabled,
+    taxPercentage: settings.taxPercentage,
+    multiChildPercentage: percentage,
+  });
+
+  return {
+    totals,
+    multiChild: {
+      multiChildDiscount: totals.multiChildDiscount,
+      // Snapshotted only when it applied, so a bill with too few children reads as none.
+      multiChildDiscountPercentage: totals.multiChildDiscount > 0 ? percentage : 0,
+      multiChildCount: totals.multiChildDiscount > 0 ? multiChildCount : 0,
+    },
+  };
+}
+
 export const billService = {
   async createDraft(input: CreateBillInput, actor: AuthenticatedUser): Promise<BillPublic> {
     const settings = await settingsService.getRaw();
@@ -397,29 +482,7 @@ export const billService = {
     const discountType = input.discount?.type ?? DiscountType.NONE;
     const discountValue = input.discount?.value ?? 0;
 
-    const preDiscountTotals = calculateBillTotals({
-      items,
-      discountType: DiscountType.NONE,
-      discountValue: 0,
-      taxEnabled: false,
-      taxPercentage: 0,
-    });
-
-    validateDiscountPermission({
-      role: actor.role,
-      subtotal: preDiscountTotals.subtotal,
-      discountType,
-      discountValue,
-      maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
-    });
-
-    const totals = calculateBillTotals({
-      items,
-      discountType,
-      discountValue,
-      taxEnabled: settings.taxEnabled,
-      taxPercentage: settings.taxPercentage,
-    });
+    const { totals, multiChild } = priceDraft(items, discountType, discountValue, actor, settings);
 
     const bill = await billRepository.create({
       status: BillStatus.DRAFT,
@@ -431,6 +494,7 @@ export const billService = {
       discount: totals.discount,
       discountType,
       discountValue,
+      ...multiChild,
       tax: totals.tax,
       grandTotal: totals.grandTotal,
       paymentMethod: input.paymentMethod ?? null,
@@ -470,6 +534,9 @@ export const billService = {
     const checkOutAt = resolveCheckOutAt(input.checkOutAt, now);
 
     const claimed: PlaySessionHydrated[] = [];
+    // Which rate each claimed ticket was charged under, and what its chosen package
+    // would have cost - read back when its bill line is built.
+    const charged = new Map<string, { rate: NamedSessionRate; switched: boolean; chosenLineTotal: number }>();
 
     try {
       for (const ticketCode of ticketCodes) {
@@ -491,13 +558,15 @@ export const billService = {
 
         // The same call the live quote makes, so what the cashier was shown a moment ago
         // and what is actually billed cannot come from two different implementations.
-        const rate = resolveSessionRate(session);
-        const { billedMinutes, breakdown } = priceSessionForPeriod({
+        // Best price: the cheapest of the chosen package and the comparable packages
+        // frozen onto the ticket at check-in; just the chosen one when there are none.
+        const { billedMinutes, breakdown, index, rate, chosenLineTotal } = priceSessionBestOf({
           checkInAt: session.checkInAt,
           checkOutAt,
-          rate,
+          rates: resolveSessionRates(session),
           minimumBillableMinutes,
         });
+        const switched = index !== 0;
 
         // Compare-and-set on ACTIVE: the loser of a race gets null and we roll back.
         // A family ticket is one child's price times the headcount, frozen here in the
@@ -506,6 +575,8 @@ export const billService = {
           checkOutAt,
           billedMinutes,
           chargedAmount: breakdown.lineTotal * resolveChildCount(session),
+          chargedPlayPackageId: switched ? rate.playPackageId : null,
+          chargedPackageName: switched ? rate.packageName : null,
           checkOutCashierId: new Types.ObjectId(actor.id),
           checkOutCashierName: actor.name,
         });
@@ -515,18 +586,26 @@ export const billService = {
         }
 
         claimed.push(claimedSession);
+        charged.set(claimedSession.id, { rate, switched, chosenLineTotal });
       }
 
       const items = claimed.flatMap<BillItemSubdocument>((session) => {
-        const rate = resolveSessionRate(session);
+        // Always set by the loop above; the fallback is the chosen rate, as before.
+        const { rate, switched, chosenLineTotal } = charged.get(session.id) ?? {
+          rate: resolveSessionRates(session)[0],
+          switched: false,
+          chosenLineTotal: 0,
+        };
         const playLine: BillItemSubdocument = {
           kind: BillItemKind.PLAY,
           childName: session.childName,
-          playPackageId: session.playPackageId,
-          packageName: session.packageName,
-          // The package rate as snapshotted at check-in, never re-read from PlayPackage.
-          durationMinutes: session.rateDurationMinutes,
-          unitPrice: session.unitPrice,
+          // The package charged, which is what the receipt prints. Under best price that
+          // may not be the one chosen at check-in; the choice is kept below, admin-only.
+          playPackageId: rate.playPackageId,
+          packageName: rate.packageName,
+          // The rate as snapshotted at check-in, never re-read from PlayPackage.
+          durationMinutes: rate.rateDurationMinutes,
+          unitPrice: rate.unitPrice,
           // The children on the ticket. Still not a multiplier of unitPrice: a timed
           // line's total is lineTotal, never unitPrice x quantity.
           quantity: resolveChildCount(session),
@@ -536,6 +615,9 @@ export const billService = {
           pricingMode: rate.pricingMode,
           graceMinutes: rate.graceMinutes,
           tieredPricing: rate.tieredPricing,
+          chosenPlayPackageId: switched ? session.playPackageId : null,
+          chosenPackageName: switched ? session.packageName : null,
+          chosenLineTotal: switched ? chosenLineTotal : null,
           productId: null,
           visitAt: null,
           visitMinutes: null,
@@ -552,29 +634,7 @@ export const billService = {
       const discountType = input.discount?.type ?? DiscountType.NONE;
       const discountValue = input.discount?.value ?? 0;
 
-      const preDiscountTotals = calculateBillTotals({
-        items,
-        discountType: DiscountType.NONE,
-        discountValue: 0,
-        taxEnabled: false,
-        taxPercentage: 0,
-      });
-
-      validateDiscountPermission({
-        role: actor.role,
-        subtotal: preDiscountTotals.subtotal,
-        discountType,
-        discountValue,
-        maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
-      });
-
-      const totals = calculateBillTotals({
-        items,
-        discountType,
-        discountValue,
-        taxEnabled: settings.taxEnabled,
-        taxPercentage: settings.taxPercentage,
-      });
+      const { totals, multiChild } = priceDraft(items, discountType, discountValue, actor, settings);
 
       // Customer details come from the request when supplied, otherwise from whatever
       // was captured at check-in on the first ticket.
@@ -593,6 +653,7 @@ export const billService = {
         discount: totals.discount,
         discountType,
         discountValue,
+        ...multiChild,
         tax: totals.tax,
         grandTotal: totals.grandTotal,
         paymentMethod: input.paymentMethod ?? null,
@@ -668,34 +729,15 @@ export const billService = {
     const discountType = input.discount?.type ?? bill.discountType;
     const discountValue = input.discount?.value ?? bill.discountValue;
 
-    const preDiscountTotals = calculateBillTotals({
-      items: bill.items,
-      discountType: DiscountType.NONE,
-      discountValue: 0,
-      taxEnabled: false,
-      taxPercentage: 0,
-    });
-
-    validateDiscountPermission({
-      role: actor.role,
-      subtotal: preDiscountTotals.subtotal,
-      discountType,
-      discountValue,
-      maximumCashierDiscountPercentage: settings.maximumCashierDiscountPercentage,
-    });
-
-    const totals = calculateBillTotals({
-      items: bill.items,
-      discountType,
-      discountValue,
-      taxEnabled: settings.taxEnabled,
-      taxPercentage: settings.taxPercentage,
-    });
+    const { totals, multiChild } = priceDraft(bill.items, discountType, discountValue, actor, settings);
 
     bill.discountType = discountType;
     bill.discountValue = discountValue;
     bill.subtotal = totals.subtotal;
     bill.discount = totals.discount;
+    bill.multiChildDiscount = multiChild.multiChildDiscount;
+    bill.multiChildDiscountPercentage = multiChild.multiChildDiscountPercentage;
+    bill.multiChildCount = multiChild.multiChildCount;
     bill.tax = totals.tax;
     bill.grandTotal = totals.grandTotal;
 
@@ -755,6 +797,8 @@ export const billService = {
       discountValue: bill.discountValue,
       taxEnabled: settings.taxEnabled,
       taxPercentage: settings.taxPercentage,
+      // The rule as snapshotted on the draft, never the current tiers.
+      multiChildPercentage: bill.multiChildDiscountPercentage ?? 0,
     });
 
     const paidAmount = input.paidAmount ?? totals.grandTotal;
@@ -781,6 +825,7 @@ export const billService = {
       status: BillStatus.PAID,
       subtotal: totals.subtotal,
       discount: totals.discount,
+      multiChildDiscount: totals.multiChildDiscount,
       tax: totals.tax,
       grandTotal: totals.grandTotal,
       paidAmount,
@@ -816,7 +861,15 @@ export const billService = {
       throw new InvalidStateError('Bill is no longer in draft status - it may have already been completed');
     }
 
-    if (isDiscountAboveThreshold(totals.subtotal, bill.discountType, bill.discountValue, settings.maximumCashierDiscountPercentage)) {
+    // The manual discount alone: the automatic multi-child discount is the business's rule.
+    if (
+      isDiscountAboveThreshold(
+        totals.subtotal - totals.multiChildDiscount,
+        bill.discountType,
+        bill.discountValue,
+        settings.maximumCashierDiscountPercentage,
+      )
+    ) {
       await auditLogService.record({
         userId: actor.id,
         userName: actor.name,
@@ -827,7 +880,8 @@ export const billService = {
           discountType: bill.discountType,
           discountValue: bill.discountValue,
           subtotal: totals.subtotal,
-          discount: totals.discount,
+          discount: totals.manualDiscount,
+          multiChildDiscount: totals.multiChildDiscount,
           thresholdPercentage: settings.maximumCashierDiscountPercentage,
         },
       });
@@ -1055,5 +1109,157 @@ export const billService = {
     });
 
     return toPublicBill(updated);
+  },
+
+  /**
+   * An admin correcting a PAID bill whose printed amount was not what was really collected
+   * (the customer paid short), or whose payment method, customer or notes were recorded
+   * wrongly. Admin-only, enforced on the route.
+   *
+   * The lines, subtotal, discount and tax are never touched - they are what was sold and
+   * what the cashier gave. A shortfall is written off as `writeOff`, so
+   * `grandTotal = subtotal - discount + tax - writeOff` always holds, and every report
+   * that sums `grandTotal` (payment methods, refunds, customer spend) follows on its own.
+   * The bill number and `paidAt` never change, so the revenue stays on the day it was taken.
+   *
+   * The change and its history entry are one atomic write, compare-and-set on the revision
+   * the admin was looking at - see `billRepository.applyCorrectionIfRevision`.
+   */
+  async correctPaidBill(id: string, input: CorrectBillInput, actor: AuthenticatedUser): Promise<BillPublic> {
+    const bill = await this.getById(id);
+
+    if (bill.status !== BillStatus.PAID) {
+      throw new InvalidStateError('Only paid bills can be corrected');
+    }
+    if ((bill.revision ?? 0) !== input.expectedRevision) {
+      throw new InvalidStateError('This bill was changed since you opened it - reload it and try again');
+    }
+
+    const changes: BillRevisionChange[] = [];
+    const update: Partial<BillDocument> = {};
+    const plain = (value: unknown) => (value instanceof Types.ObjectId ? value.toString() : value);
+    const track = <K extends keyof BillDocument>(field: K, from: BillDocument[K], to: BillDocument[K]) => {
+      if (plain(from) === plain(to)) return;
+      changes.push({ field, from: plain(from), to: plain(to) });
+      update[field] = to;
+    };
+
+    // What the bill charged before any write-off. Fixed for the life of a paid bill.
+    const charge = bill.subtotal - bill.discount + bill.tax;
+    const currentWriteOff = bill.writeOff ?? 0;
+
+    if (input.amountReceived !== undefined) {
+      if (input.amountReceived > charge) {
+        throw new PaymentError(
+          'The amount received cannot be more than the bill charged - the lines on a paid bill cannot change',
+        );
+      }
+      const writeOff = charge - input.amountReceived;
+      // Re-sending the amount the bill already records is not a change, so it must not
+      // flatten the cashier's tendered amount and change either.
+      if (writeOff !== currentWriteOff) {
+        track('writeOff', currentWriteOff, writeOff);
+        track('grandTotal', bill.grandTotal, input.amountReceived);
+        track('paidAmount', bill.paidAmount, input.amountReceived);
+        track('balance', bill.balance, 0);
+        update.writeOffReason = writeOff > 0 ? input.reason : null;
+      }
+    }
+
+    if (input.paymentMethod !== undefined) {
+      track('paymentMethod', bill.paymentMethod, input.paymentMethod);
+    }
+    if (input.notes !== undefined) {
+      track('notes', bill.notes ?? '', input.notes);
+    }
+    if (input.customer?.parentName !== undefined) {
+      track('parentName', bill.parentName ?? '', input.customer.parentName);
+    }
+
+    let customerMoved = false;
+    const phoneNumber = input.customer?.phoneNumber;
+    if (phoneNumber !== undefined && phoneNumber !== (bill.phoneNumber ?? '')) {
+      track('phoneNumber', bill.phoneNumber ?? '', phoneNumber);
+      // A family's bills are matched by phone number or by customer id, so the id has to
+      // follow the number or the bill would keep counting towards the old family.
+      const customerId = phoneNumber
+        ? await customerService.ensureCustomer({
+            phoneNumber,
+            parentName: input.customer?.parentName || bill.parentName || undefined,
+          })
+        : null;
+      track('customerId', bill.customerId, customerId ? new Types.ObjectId(customerId) : null);
+      customerMoved = true;
+    }
+
+    if (changes.length === 0) {
+      throw new ValidationError('Nothing to correct - every value already matches the bill');
+    }
+
+    const editedAt = new Date();
+    const editedBy = new Types.ObjectId(actor.id);
+    const before = toPublicBill(bill);
+
+    const updated = await billRepository.applyCorrectionIfRevision(
+      id,
+      input.expectedRevision,
+      { ...update, lastEditedAt: editedAt, lastEditedBy: editedBy, lastEditedByName: actor.name },
+      {
+        revision: input.expectedRevision + 1,
+        editedAt,
+        editedBy,
+        editedByName: actor.name,
+        reason: input.reason,
+        changes,
+      },
+    );
+
+    if (!updated) {
+      throw new InvalidStateError('This bill was changed since you opened it - reload it and try again');
+    }
+
+    if (customerMoved) {
+      await playSessionRepository.reassignCustomerByBillId(
+        updated._id,
+        updated.customerId ? updated.customerId.toString() : null,
+      );
+      // The family the bill left, then the one it joined.
+      await customerService.recomputeStatsForBill(bill);
+      await customerService.recomputeStatsForBill(updated);
+    } else if ('grandTotal' in update) {
+      await customerService.recomputeStatsForBill(updated);
+    }
+
+    await auditLogService.record({
+      userId: actor.id,
+      userName: actor.name,
+      action: AuditAction.BILL_CORRECTED,
+      entityType: AuditEntityType.BILL,
+      entityId: updated.id,
+      before,
+      after: toPublicBill(updated),
+      metadata: {
+        reason: input.reason,
+        revision: updated.revision,
+        changes,
+        writeOffDelta: (updated.writeOff ?? 0) - currentWriteOff,
+      },
+    });
+
+    return toPublicBill(updated);
+  },
+
+  async getRevisions(id: string): Promise<BillRevisionPublic[]> {
+    const bill = await this.getById(id);
+    return [...(bill.revisions ?? [])]
+      .sort((a, b) => b.revision - a.revision)
+      .map((entry) => ({
+        revision: entry.revision,
+        editedAt: entry.editedAt,
+        editedBy: entry.editedBy.toString(),
+        editedByName: entry.editedByName,
+        reason: entry.reason,
+        changes: entry.changes.map(({ field, from, to }) => ({ field, from, to })),
+      }));
   },
 };

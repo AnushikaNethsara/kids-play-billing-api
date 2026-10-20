@@ -17,6 +17,7 @@ import {
   minimumAppliedExpr,
   paidAmountWithMethod,
   revenueRecognizedMatch,
+  BILL_WRITE_OFF,
 } from '../../common/reporting/billFilters';
 import type { AuthenticatedUser } from '../../common/types/express';
 import type { ResolvedReportRange } from './reports.service';
@@ -61,6 +62,7 @@ function emptyFigures(): BucketFigures {
     childrenCount: 0,
     grossRevenue: 0,
     discounts: 0,
+    writeOffs: 0,
     refunds: 0,
     netRevenue: 0,
     tax: 0,
@@ -137,6 +139,7 @@ export async function getPeriodSummary(
             childrenCount: { $sum: CHILDREN_ON_BILL },
             grossRevenue: { $sum: '$subtotal' },
             discounts: { $sum: '$discount' },
+            writeOffs: { $sum: BILL_WRITE_OFF },
             refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
             tax: { $sum: '$tax' },
             cashAmount: { $sum: paidAmountWithMethod(PaymentMethod.CASH) },
@@ -193,7 +196,7 @@ export async function getPeriodSummary(
 
   const buckets: PeriodBucket[] = bucketSkeleton(start, end, timezone, groupBy).map((bucket) => {
     const entry = figures.get(bucket.label) ?? emptyFigures();
-    return { ...bucket, ...entry, netRevenue: entry.grossRevenue - entry.discounts - entry.refunds };
+    return { ...bucket, ...entry, netRevenue: entry.grossRevenue - entry.discounts - entry.writeOffs - entry.refunds };
   });
 
   const methodAmount = (method: PaymentMethod) =>
@@ -210,6 +213,7 @@ export async function getPeriodSummary(
     childrenCount: totals.childrenServed,
     grossRevenue: totals.grossRevenue,
     discounts: totals.discounts,
+    writeOffs: totals.writeOffs,
     refunds: totals.refunds,
     netRevenue: totals.netRevenue,
     tax: buckets.reduce((sum, bucket) => sum + bucket.tax, 0),

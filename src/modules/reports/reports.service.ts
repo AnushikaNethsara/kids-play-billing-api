@@ -16,13 +16,19 @@ import { BillItemKind, resolveItemKind } from '../../common/constants/billItemKi
 import { PlaySessionStatus } from '../../common/constants/sessionStatus';
 import { SessionPricingMode } from '../../common/constants/pricingModes';
 import { AuditAction } from '../../common/constants/auditActions';
-import { EXCLUDE_TEST_BILLS, EXCLUDE_TEST_SESSIONS, revenueRecognizedMatch } from '../../common/reporting/billFilters';
+import {
+  BILL_WRITE_OFF,
+  EXCLUDE_TEST_BILLS,
+  EXCLUDE_TEST_SESSIONS,
+  revenueRecognizedMatch,
+} from '../../common/reporting/billFilters';
 import { resolveDateRange, formatBusinessDate } from '../../common/utils/dateRange';
 import { buildPaginationMeta, getSkip, type PaginationMeta } from '../../common/utils/pagination';
 import { ValidationError } from '../../common/errors';
 import type { AuthenticatedUser } from '../../common/types/express';
 import { maskPhone } from './reports.csv';
 import { toLocalPhone } from '../../common/utils/phone';
+import { formatMoney } from '../../common/utils/money';
 import { getPeriodSummary } from './periodSummary';
 import { getCustomerReport } from './customerReport';
 import {
@@ -136,7 +142,9 @@ function toBillRegisterRow(bill: LeanBill, includeContact: boolean): BillRegiste
     subtotal: bill.subtotal,
     discount: bill.discount,
     tax: bill.tax,
+    writeOff: bill.writeOff ?? 0,
     grandTotal: bill.grandTotal,
+    revision: bill.revision ?? 0,
     refundedAt: bill.refundedAt ?? null,
     cancelledAt: bill.cancelledAt ?? null,
     reason: bill.cancellationReason ?? bill.refundReason ?? '',
@@ -174,6 +182,9 @@ async function billRegisterTotals(match: FilterQuery<BillDocument>): Promise<Bil
         discounts: {
           $sum: { $cond: [{ $in: ['$status', [BillStatus.PAID, BillStatus.REFUNDED]] }, '$discount', 0] },
         },
+        writeOffs: {
+          $sum: { $cond: [{ $in: ['$status', [BillStatus.PAID, BillStatus.REFUNDED]] }, BILL_WRITE_OFF, 0] },
+        },
         refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
         tax: { $sum: { $cond: [{ $in: ['$status', [BillStatus.PAID, BillStatus.REFUNDED]] }, '$tax', 0] } },
         cancelledAfterPaymentCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.CANCELLED] }, 1, 0] } },
@@ -188,6 +199,7 @@ async function billRegisterTotals(match: FilterQuery<BillDocument>): Promise<Bil
     billCount: 0,
     grossRevenue: 0,
     discounts: 0,
+    writeOffs: 0,
     refunds: 0,
     tax: 0,
     cancelledAfterPaymentCount: 0,
@@ -197,8 +209,9 @@ async function billRegisterTotals(match: FilterQuery<BillDocument>): Promise<Bil
     billCount: totals.billCount,
     grossRevenue: totals.grossRevenue,
     discounts: totals.discounts,
+    writeOffs: totals.writeOffs,
     refunds: totals.refunds,
-    netRevenue: totals.grossRevenue - totals.discounts - totals.refunds,
+    netRevenue: totals.grossRevenue - totals.discounts - totals.writeOffs - totals.refunds,
     tax: totals.tax,
     cancelledAfterPaymentCount: totals.cancelledAfterPaymentCount,
     cancelledAfterPaymentAmount: totals.cancelledAfterPaymentAmount,
@@ -323,7 +336,7 @@ export const reportsService = {
     ]);
 
     const revenueMatch = revenueRecognizedMatch(start, end);
-    const [firstBill, lastBill, openDrafts, activeSessions, adjustedBills] = await Promise.all([
+    const [firstBill, lastBill, openDrafts, activeSessions, adjustedBills, correctedBills] = await Promise.all([
       BillModel.findOne(revenueMatch, { billNumber: 1 }).sort({ paidAt: 1 }).lean(),
       BillModel.findOne(revenueMatch, { billNumber: 1 }).sort({ paidAt: -1 }).lean(),
       BillModel.find({ ...EXCLUDE_TEST_BILLS, status: BillStatus.DRAFT, createdAt: { $gte: start, $lte: end } })
@@ -346,6 +359,9 @@ export const reportsService = {
           { status: BillStatus.REFUNDED, refundedAt: { $gt: end } },
         ],
       }).lean(),
+      // Paid today, corrected by an admin after today ended - the other way a reprint of
+      // the day can come out different from the copy printed at closing time.
+      BillModel.find({ ...EXCLUDE_TEST_BILLS, paidAt: { $gte: start, $lte: end }, lastEditedAt: { $gt: end } }).lean(),
     ]);
 
     const names = await resolveUserNames(adjustedBills.flatMap((bill) => [bill.cancelledBy, bill.refundedBy]));
@@ -362,6 +378,24 @@ export const reportsService = {
           reason: (cancelled ? bill.cancellationReason : bill.refundReason) ?? '',
         };
       })
+      .concat(
+        correctedBills.flatMap((bill) =>
+          (bill.revisions ?? [])
+            .filter((entry) => entry.editedAt.getTime() > end.getTime())
+            .map((entry): DailyCloseAdjustment => {
+              const total = entry.changes.find((change) => change.field === 'grandTotal');
+              return {
+                billId: bill._id.toString(),
+                billNumber: bill.billNumber ?? null,
+                action: 'CORRECTED',
+                amount: total ? Number(total.to) - Number(total.from) : 0,
+                occurredAt: entry.editedAt,
+                actorName: entry.editedByName,
+                reason: entry.reason,
+              };
+            }),
+        ),
+      )
       .sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
     return {
@@ -469,7 +503,7 @@ export const reportsService = {
     const inRange = { $gte: start, $lte: end };
     const none = Promise.resolve([] as never[]);
 
-    const [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid] = await Promise.all([
+    const [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected] = await Promise.all([
       wants(ExceptionType.DISCOUNT)
         ? BillModel.find({ ...revenueRecognizedMatch(start, end), discount: { $gt: 0 } })
             .limit(EXCEPTIONS_ROW_CAP)
@@ -503,6 +537,11 @@ export const reportsService = {
       wants(ExceptionType.LATE_PAYMENT)
         ? BillModel.find({ ...EXCLUDE_TEST_BILLS, paymentRecordedAt: inRange }).limit(EXCEPTIONS_ROW_CAP).lean()
         : none,
+      wants(ExceptionType.BILL_CORRECTION)
+        ? AuditLogModel.find({ action: AuditAction.BILL_CORRECTED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
     ]);
 
     const names = await resolveUserNames([
@@ -512,9 +551,14 @@ export const reportsService = {
       ...voided.map((session) => session.voidedBy),
     ]);
 
-    // Force-close audit rows carry the bill id; the bill carries its number and cashier.
+    // Force-close and correction audit rows carry the bill id; the bill carries its number
+    // and cashier.
     const forceClosedBills = await BillModel.find(
-      { _id: { $in: forceClosed.map((log) => log.entityId).filter((id) => Types.ObjectId.isValid(id)) } },
+      {
+        _id: {
+          $in: [...forceClosed, ...corrected].map((log) => log.entityId).filter((id) => Types.ObjectId.isValid(id)),
+        },
+      },
       { billNumber: 1, cashierName: 1, grandTotal: 1 },
     ).lean();
     const forceClosedById = new Map(forceClosedBills.map((bill) => [bill._id.toString(), bill]));
@@ -531,7 +575,9 @@ export const reportsService = {
           actorName: bill.cashierName,
           cashierName: bill.cashierName,
           reason: '',
-          detail: percentOf(bill.discount, bill.subtotal),
+          detail: (bill.multiChildDiscount ?? 0) > 0
+            ? `${percentOf(bill.discount, bill.subtotal)} - incl. ${bill.multiChildDiscountPercentage}% family discount (${formatMoney(bill.multiChildDiscount)})`
+            : percentOf(bill.discount, bill.subtotal),
         }),
       ),
       ...refunded.map(
@@ -622,9 +668,30 @@ export const reportsService = {
             : '',
         }),
       ),
+      ...corrected.map((log): ExceptionRow => {
+        const bill = forceClosedById.get(log.entityId);
+        const metadata = (log.metadata ?? {}) as {
+          reason?: string;
+          writeOffDelta?: number;
+          changes?: Array<{ field: string }>;
+        };
+        return {
+          type: ExceptionType.BILL_CORRECTION,
+          occurredAt: log.createdAt,
+          entityType: 'BILL',
+          entityId: log.entityId,
+          reference: bill?.billNumber ?? '',
+          // Positive when more was written off, negative when a write-off was undone.
+          amount: metadata.writeOffDelta ?? null,
+          actorName: log.userName,
+          cashierName: bill?.cashierName ?? '',
+          reason: metadata.reason ?? '',
+          detail: `Changed ${(metadata.changes ?? []).map((change) => change.field).join(', ')}`,
+        };
+      }),
     ].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
-    const sources = [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid];
+    const sources = [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected];
     const truncated = rows.length > EXCEPTIONS_ROW_CAP || sources.some((source) => source.length >= EXCEPTIONS_ROW_CAP);
 
     const countsByType = Object.fromEntries(Object.values(ExceptionType).map((type) => [type, 0])) as Record<

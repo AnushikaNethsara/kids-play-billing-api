@@ -47,6 +47,9 @@ export const playSessionRepository = {
       billedMinutes: number;
       /** Frozen in the same atomic write as billedMinutes, so the two can never disagree. */
       chargedAmount: number;
+      /** Set when best price charged a package other than the chosen one. */
+      chargedPlayPackageId: Types.ObjectId | null;
+      chargedPackageName: string | null;
       checkOutCashierId: Types.ObjectId;
       checkOutCashierName: string;
     },
@@ -75,6 +78,9 @@ export const playSessionRepository = {
           // session left carrying one after its bill was cancelled would keep reporting
           // revenue that was reversed - and would double-count once it is billed again.
           chargedAmount: null,
+          // Re-decided at the next checkout, from a longer stay.
+          chargedPlayPackageId: null,
+          chargedPackageName: null,
           billId: null,
           checkOutCashierId: null,
           checkOutCashierName: null,
@@ -119,6 +125,17 @@ export const playSessionRepository = {
     await PlaySessionModel.updateMany(
       { billId: new Types.ObjectId(billId), customerId: null },
       { $set: { customerId: new Types.ObjectId(customerId) } },
+    ).exec();
+  },
+
+  /**
+   * Moves every session a bill paid for to another customer (or to none), after an admin
+   * corrected the phone number on the bill. Unlike setCustomerIdByBillId this overwrites.
+   */
+  async reassignCustomerByBillId(billId: Types.ObjectId | string, customerId: string | null): Promise<void> {
+    await PlaySessionModel.updateMany(
+      { billId: new Types.ObjectId(billId) },
+      { $set: { customerId: customerId ? new Types.ObjectId(customerId) : null } },
     ).exec();
   },
 

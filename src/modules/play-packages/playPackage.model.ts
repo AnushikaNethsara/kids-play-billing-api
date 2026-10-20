@@ -32,6 +32,13 @@ export interface PlayPackageDocument {
    * package; like `graceMinutes` it is kept when the mode changes away and back.
    */
   tieredPricing: TieredPricing | null;
+  /**
+   * Best-price group. Active packages sharing a group are compared at checkout and the
+   * cheapest is charged - see docs/best-price.md. Null (the default, and absent on older
+   * packages) takes part in no comparison, so the package prices exactly as before.
+   * Stored trimmed and lower-cased, so "Standard" and "standard " are one group.
+   */
+  priceGroup: string | null;
   isActive: boolean;
   description: string;
   sortOrder: number;
@@ -56,6 +63,7 @@ const playPackageSchema = new Schema<PlayPackageDocument>(
     },
     graceMinutes: { type: Number, default: 0, min: 0 },
     tieredPricing: { type: tieredPricingSchema, default: null },
+    priceGroup: { type: String, default: null },
     isActive: { type: Boolean, default: true },
     description: { type: String, default: '' },
     sortOrder: { type: Number, default: 0 },
@@ -67,6 +75,8 @@ const playPackageSchema = new Schema<PlayPackageDocument>(
 
 // Cashiers list only active packages, sorted for display.
 playPackageSchema.index({ isActive: 1, sortOrder: 1 });
+// The comparable packages snapshotted onto every check-in.
+playPackageSchema.index({ priceGroup: 1, isActive: 1 });
 
 /**
  * Read the pricing fields defensively, the same way settings.model.ts resolves its own.

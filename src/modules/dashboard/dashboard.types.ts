@@ -21,7 +21,12 @@ export interface MoneyBreakdown {
 
 export interface DashboardSummary {
   grossRevenue: number;
+  /** Every discount, the automatic multi-child one included. */
   discounts: number;
+  /** The automatic multi-child part of `discounts`. */
+  multiChildDiscounts: number;
+  /** Written off paid bills by admin corrections - money never collected. */
+  writeOffs: number;
   refunds: number;
   netRevenue: number;
   paidBillsCount: number;
@@ -86,6 +91,8 @@ export interface DailyRevenuePoint {
   date: string;
   grossRevenue: number;
   discounts: number;
+  /** Written off paid bills by admin corrections - money never collected. */
+  writeOffs: number;
   refunds: number;
   netRevenue: number;
   billCount: number;
@@ -96,6 +103,8 @@ export interface MonthlyRevenuePoint {
   month: string;
   grossRevenue: number;
   discounts: number;
+  /** Written off paid bills by admin corrections - money never collected. */
+  writeOffs: number;
   refunds: number;
   netRevenue: number;
   billCount: number;
@@ -106,6 +115,8 @@ export interface YearlyRevenuePoint {
   year: number;
   grossRevenue: number;
   discounts: number;
+  /** Written off paid bills by admin corrections - money never collected. */
+  writeOffs: number;
   refunds: number;
   netRevenue: number;
   billCount: number;

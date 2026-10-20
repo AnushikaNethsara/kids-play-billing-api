@@ -76,6 +76,14 @@ export function assertPricingConsistent(pkg: {
   }
 }
 
+/** A best-price group name. Blank clears it; stored trimmed and lower-cased. */
+const priceGroupSchema = z
+  .string()
+  .trim()
+  .max(50)
+  .nullable()
+  .transform((value) => (value ? value.toLowerCase() : null));
+
 export const createPlayPackageSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -85,6 +93,7 @@ export const createPlayPackageSchema = z
     pricingMode: z.nativeEnum(SessionPricingMode).optional(),
     graceMinutes: z.number().int().min(0).max(24 * 60).optional(),
     tieredPricing: tieredPricingInputSchema.optional(),
+    priceGroup: priceGroupSchema.optional(),
     description: z.string().trim().max(500).optional(),
     sortOrder: z.number().int().optional(),
   })
@@ -114,6 +123,7 @@ export const updatePlayPackageSchema = z
     pricingMode: z.nativeEnum(SessionPricingMode).optional(),
     graceMinutes: z.number().int().min(0).max(24 * 60).optional(),
     tieredPricing: tieredPricingInputSchema.optional(),
+    priceGroup: priceGroupSchema.optional(),
     description: z.string().trim().max(500).optional(),
     sortOrder: z.number().int().optional(),
   })

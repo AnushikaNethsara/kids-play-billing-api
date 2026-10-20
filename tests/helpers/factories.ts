@@ -42,6 +42,7 @@ export async function createPlayPackage(overrides: Partial<{
   pricingMode: SessionPricingMode;
   graceMinutes: number;
   tieredPricing: TieredPricing | null;
+  priceGroup: string | null;
   isActive: boolean;
 }> = {}) {
   return PlayPackageModel.create({
@@ -51,6 +52,7 @@ export async function createPlayPackage(overrides: Partial<{
     pricingMode: overrides.pricingMode ?? SessionPricingMode.PRORATA,
     graceMinutes: overrides.graceMinutes ?? 0,
     tieredPricing: overrides.tieredPricing ?? null,
+    priceGroup: overrides.priceGroup ?? null,
     isActive: overrides.isActive ?? true,
     description: '',
     sortOrder: 0,

@@ -7,7 +7,14 @@ import type {
   ListCustomersQuery,
   CustomerPublic,
   CustomerChild,
+  CustomerSegmentCounts,
 } from './customer.types';
+import {
+  CUSTOMER_SEGMENTS,
+  businessDateRange,
+  customerIdsWithVisits,
+  segmentFilter,
+} from './customerSegments';
 import { DuplicateResourceError, NotFoundError } from '../../common/errors';
 import { buildPaginationMeta } from '../../common/utils/pagination';
 import { BillModel } from '../bills/bill.model';
@@ -19,6 +26,49 @@ import {
   visitDayExpr,
 } from './customerVisits';
 
+/** Every list filter except the free-text search, as Mongo conditions to AND together. */
+async function buildListConditions(
+  query: ListCustomersQuery,
+  timezone: string,
+): Promise<Record<string, unknown>[]> {
+  const conditions: Record<string, unknown>[] = [];
+  if (query.segment) conditions.push(await segmentFilter(query.segment, timezone));
+
+  const between = (field: string, min?: number, max?: number) => {
+    if (min === undefined && max === undefined) return;
+    const range: { $gte?: number; $lte?: number } = {};
+    if (min !== undefined) range.$gte = min;
+    if (max !== undefined) range.$lte = max;
+    conditions.push({ [field]: range });
+  };
+  between('visitCount', query.minVisits, query.maxVisits);
+  between('totalSpent', query.minSpent, query.maxSpent);
+
+  const dates: [string, string | undefined, string | undefined][] = [
+    ['lastVisitAt', query.lastVisitFrom, query.lastVisitTo],
+    ['firstVisitAt', query.firstVisitFrom, query.firstVisitTo],
+    ['createdAt', query.joinedFrom, query.joinedTo],
+  ];
+  for (const [field, from, to] of dates) {
+    const range = businessDateRange(timezone, from, to);
+    if (range) conditions.push({ [field]: range });
+  }
+
+  const visited = businessDateRange(timezone, query.visitedFrom, query.visitedTo);
+  if (visited) {
+    conditions.push({ _id: { $in: await customerIdsWithVisits({ timezone, paidAt: visited }) } });
+  }
+
+  const present = (field: string, wanted?: boolean) => {
+    if (wanted === undefined) return;
+    conditions.push(wanted ? { [field]: { $gt: '' } } : { [field]: { $in: ['', null] } });
+  };
+  present('phoneNumber', query.hasPhone);
+  present('email', query.hasEmail);
+
+  return conditions;
+}
+
 function toPublic(customer: CustomerHydrated): CustomerPublic {
   return {
     id: customer.id,
@@ -29,6 +79,7 @@ function toPublic(customer: CustomerHydrated): CustomerPublic {
     visitCount: customer.visitCount,
     totalSpent: customer.totalSpent,
     lastVisitAt: customer.lastVisitAt,
+    firstVisitAt: customer.firstVisitAt,
     createdAt: customer.createdAt,
     updatedAt: customer.updatedAt,
   };
@@ -46,8 +97,10 @@ export const customerService = {
   },
 
   async list(query: ListCustomersQuery) {
+    const { timezone } = await settingsService.getRaw();
     const { customers, total } = await customerRepository.list(
-      { search: query.search },
+      { search: query.search, conditions: await buildListConditions(query, timezone) },
+      { field: query.sort, order: query.order },
       { page: query.page, limit: query.limit },
     );
 
@@ -55,6 +108,17 @@ export const customerService = {
       customers: customers.map(toPublic),
       meta: buildPaginationMeta({ page: query.page, limit: query.limit }, total),
     };
+  },
+
+  /** How many customers are in each segment right now, for the list's tab badges. */
+  async segmentCounts(): Promise<CustomerSegmentCounts> {
+    const { timezone } = await settingsService.getRaw();
+    const now = new Date();
+    const filters: Record<string, Record<string, unknown>> = { all: {} };
+    for (const segment of CUSTOMER_SEGMENTS) {
+      filters[segment] = await segmentFilter(segment, timezone, now);
+    }
+    return (await customerRepository.countEach(filters)) as CustomerSegmentCounts;
   },
 
   async getById(id: string): Promise<CustomerPublic> {
@@ -152,10 +216,27 @@ export const customerService = {
     const { timezone } = await settingsService.getRaw();
     const identity = customerBillsMatch(customer);
 
-    const [visits] = await BillModel.aggregate<{ visitCount: number; lastVisitAt: Date | null }>([
+    const [visits] = await BillModel.aggregate<{
+      visitCount: number;
+      lastVisitAt: Date | null;
+      firstVisitAt: Date | null;
+    }>([
       { $match: { $and: [identity, VISIT_BILL_MATCH] } },
-      { $group: { _id: visitDayExpr(timezone), lastPaidAt: { $max: '$paidAt' } } },
-      { $group: { _id: null, visitCount: { $sum: 1 }, lastVisitAt: { $max: '$lastPaidAt' } } },
+      {
+        $group: {
+          _id: visitDayExpr(timezone),
+          firstPaidAt: { $min: '$paidAt' },
+          lastPaidAt: { $max: '$paidAt' },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          visitCount: { $sum: 1 },
+          firstVisitAt: { $min: '$firstPaidAt' },
+          lastVisitAt: { $max: '$lastPaidAt' },
+        },
+      },
     ]);
     const [spend] = await BillModel.aggregate<{ totalSpent: number }>([
       { $match: { $and: [identity, SPEND_BILL_MATCH] } },
@@ -165,6 +246,7 @@ export const customerService = {
     await customerRepository.setStats(customer.id, {
       visitCount: visits?.visitCount ?? 0,
       lastVisitAt: visits?.lastVisitAt ?? null,
+      firstVisitAt: visits?.firstVisitAt ?? null,
       totalSpent: spend?.totalSpent ?? 0,
     });
   },

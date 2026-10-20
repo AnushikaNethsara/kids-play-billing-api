@@ -176,11 +176,18 @@ export const receiptService = {
         }),
         subtotal: bill.subtotal,
         discount: bill.discount,
+        multiChildDiscount: bill.multiChildDiscount ?? 0,
+        multiChildDiscountPercentage: bill.multiChildDiscountPercentage ?? 0,
+        multiChildCount: bill.multiChildCount ?? 0,
         tax: bill.tax,
+        writeOff: bill.writeOff ?? 0,
         grandTotal: bill.grandTotal,
         paidAmount: bill.paidAmount,
         balance: bill.balance,
         paymentMethod: bill.paymentMethod,
+        correctedDate: bill.lastEditedAt
+          ? DateTime.fromJSDate(bill.lastEditedAt).setZone(settings.timezone).toFormat('yyyy-MM-dd')
+          : null,
       },
       receipt: {
         paperWidth: settings.receiptPaperWidth,
@@ -306,16 +313,37 @@ export const receiptService = {
     lines.push(dashLine(width));
 
     lines.push(twoColumnLine('Subtotal', formatMoney(data.bill.subtotal), width));
-    if (data.bill.discount > 0) {
-      lines.push(twoColumnLine('Discount', `-${formatMoney(data.bill.discount)}`, width));
+    // The automatic multi-child discount on its own line - printed as "Family discount",
+    // the name parents know it by - then whatever the cashier gave. The children count
+    // only fits on 80mm paper; on 58mm the label keeps to the rate so the amount stays
+    // on the same line.
+    const multiChild = data.bill.multiChildDiscount ?? 0;
+    if (multiChild > 0) {
+      const percentage = data.bill.multiChildDiscountPercentage;
+      const label =
+        width >= 48
+          ? `Family discount (${data.bill.multiChildCount} kids, ${percentage}%)`
+          : `Family discount ${percentage}%`;
+      lines.push(twoColumnLine(label, `-${formatMoney(multiChild)}`, width));
+    }
+    const manualDiscount = data.bill.discount - multiChild;
+    if (manualDiscount > 0) {
+      lines.push(twoColumnLine('Discount', `-${formatMoney(manualDiscount)}`, width));
     }
     if (data.bill.tax > 0) {
       lines.push(twoColumnLine('Tax', formatMoney(data.bill.tax), width));
+    }
+    if (data.bill.writeOff > 0) {
+      lines.push(twoColumnLine('Write-off', `-${formatMoney(data.bill.writeOff)}`, width));
     }
     lines.push(twoColumnLine('TOTAL', formatMoney(data.bill.grandTotal), width));
     lines.push(twoColumnLine('Paid', formatMoney(data.bill.paidAmount), width));
     lines.push(twoColumnLine('Balance', formatMoney(data.bill.balance), width));
     if (data.bill.paymentMethod) lines.push(`Payment: ${data.bill.paymentMethod}`);
+    if (data.bill.correctedDate) {
+      const corrected = DateTime.fromFormat(data.bill.correctedDate, 'yyyy-MM-dd');
+      lines.push(...wrapText(`Corrected ${corrected.toFormat('dd/MM/yyyy')}`, width));
+    }
     lines.push(dashLine(width));
 
     lines.push(centerText(data.receipt.footer, width));

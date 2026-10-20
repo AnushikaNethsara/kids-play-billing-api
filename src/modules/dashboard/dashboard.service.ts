@@ -33,6 +33,7 @@ import {
   PLAY_LINES_ONLY,
   minimumAppliedExpr,
   SESSION_CHILD_COUNT,
+  BILL_WRITE_OFF,
 } from '../../common/reporting/billFilters';
 
 async function resolveRange(query: DashboardQuery) {
@@ -53,6 +54,9 @@ export const dashboardService = {
           _id: null,
           grossRevenue: { $sum: '$subtotal' },
           discounts: { $sum: '$discount' },
+          // The automatic part of `discounts`, which already includes it.
+          multiChildDiscounts: { $sum: { $ifNull: ['$multiChildDiscount', 0] } },
+          writeOffs: { $sum: BILL_WRITE_OFF },
           refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
           paidBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.PAID] }, 1, 0] } },
           refundedBillsCount: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, 1, 0] } },
@@ -130,6 +134,7 @@ export const dashboardService = {
 
     const grossRevenue = totals?.grossRevenue ?? 0;
     const discounts = totals?.discounts ?? 0;
+    const writeOffs = totals?.writeOffs ?? 0;
     const refunds = totals?.refunds ?? 0;
     const paidBillsCount = totals?.paidBillsCount ?? 0;
     const paidGrandTotalSum = totals?.paidGrandTotalSum ?? 0;
@@ -137,8 +142,10 @@ export const dashboardService = {
     return {
       grossRevenue,
       discounts,
+      multiChildDiscounts: totals?.multiChildDiscounts ?? 0,
+      writeOffs,
       refunds,
-      netRevenue: grossRevenue - discounts - refunds,
+      netRevenue: grossRevenue - discounts - writeOffs - refunds,
       paidBillsCount,
       cancelledBillsCount: cancelledCount?.count ?? 0,
       refundedBillsCount: totals?.refundedBillsCount ?? 0,
@@ -191,6 +198,7 @@ export const dashboardService = {
           _id: { $dateToString: { format: dateFormat, date: '$paidAt', timezone } },
           grossRevenue: { $sum: '$subtotal' },
           discounts: { $sum: '$discount' },
+          writeOffs: { $sum: BILL_WRITE_OFF },
           refunds: { $sum: { $cond: [{ $eq: ['$status', BillStatus.REFUNDED] }, '$grandTotal', 0] } },
           billCount: { $sum: 1 },
           childrenCount: { $sum: CHILDREN_ON_BILL },
@@ -200,10 +208,11 @@ export const dashboardService = {
     ]);
 
     return rows.map((row) => {
-      const netRevenue = row.grossRevenue - row.discounts - row.refunds;
+      const netRevenue = row.grossRevenue - row.discounts - row.writeOffs - row.refunds;
       const base = {
         grossRevenue: row.grossRevenue,
         discounts: row.discounts,
+        writeOffs: row.writeOffs,
         refunds: row.refunds,
         netRevenue,
         billCount: row.billCount,

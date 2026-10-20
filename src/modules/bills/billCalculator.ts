@@ -7,7 +7,7 @@ import {
   type TieredPricing,
 } from '../../common/constants/pricingModes';
 import { UserRole } from '../../common/constants/roles';
-import { GROUP_RATE_MINUTES } from '../../common/constants/billItemKind';
+import { BillItemKind, GROUP_RATE_MINUTES, resolveItemKind } from '../../common/constants/billItemKind';
 import { PaymentError, ValidationError } from '../../common/errors';
 import { calculatePercentage, sumMinorUnits } from '../../common/utils/money';
 import type { BillItemPublic } from './bill.types';
@@ -524,6 +524,67 @@ export function priceSessionForPeriod(params: {
   return { ...duration, breakdown: priceSession(params.rate, duration.billedMinutes) };
 }
 
+export interface BestSessionPricing<Rate extends SessionRateSnapshot> extends SessionPricing {
+  /** Index into `rates` of the rate charged. 0 means the chosen package was cheapest. */
+  index: number;
+  rate: Rate;
+  /** One child's price under the chosen package (`rates[0]`), for the admin comparison. */
+  chosenLineTotal: number;
+  /**
+   * Minutes until the charged total next rises. The cheapest rate's countdown, or - when
+   * several tie - the latest of theirs: the lowest price only rises once every rate that
+   * shares it has risen.
+   */
+  minutesUntilNextCharge: number | null;
+}
+
+/**
+ * Best-price checkout: prices the stay under the chosen package (`rates[0]`) and under every
+ * comparable package snapshotted onto the ticket at check-in, and charges the cheapest.
+ *
+ * Each rate goes through `priceSessionForPeriod`, so each keeps its own minimum rule. A
+ * tie goes to the chosen package, then to the earlier rate, so adding a comparable
+ * package never moves a visit that it does not make cheaper. Prices are per child; a
+ * family ticket multiplies the winner out, exactly as before.
+ */
+export function priceSessionBestOf<Rate extends SessionRateSnapshot>(params: {
+  checkInAt: Date;
+  checkOutAt: Date;
+  rates: [Rate, ...Rate[]];
+  minimumBillableMinutes: number;
+}): BestSessionPricing<Rate> {
+  const priced = params.rates.map((rate) =>
+    priceSessionForPeriod({
+      checkInAt: params.checkInAt,
+      checkOutAt: params.checkOutAt,
+      rate,
+      minimumBillableMinutes: params.minimumBillableMinutes,
+    }),
+  );
+
+  let index = 0;
+  for (let i = 1; i < priced.length; i += 1) {
+    if (priced[i].breakdown.lineTotal < priced[index].breakdown.lineTotal) index = i;
+  }
+  const lowest = priced[index].breakdown.lineTotal;
+
+  const tiedCountdowns = priced
+    .filter((pricing) => pricing.breakdown.lineTotal === lowest)
+    .map((pricing) => pricing.breakdown.minutesUntilNextCharge);
+  // A PRORATA rate rises every minute (null - no countdown). The lowest price holds until
+  // the last tied rate rises, so a tied rate with a countdown wins over one without.
+  const countdowns = tiedCountdowns.filter((minutes): minutes is number => minutes !== null);
+  const minutesUntilNextCharge = countdowns.length > 0 ? Math.max(...countdowns) : null;
+
+  return {
+    ...priced[index],
+    index,
+    rate: params.rates[index],
+    chosenLineTotal: priced[0].breakdown.lineTotal,
+    minutesUntilNextCharge,
+  };
+}
+
 /**
  * When this bill's checkout happened - the moment a payment recorded after the fact is
  * dated to.
@@ -578,25 +639,90 @@ export function priceGroupVisit(params: {
   return Math.round((ratePerChildPerHour * headcount * visitMinutes) / GROUP_RATE_MINUTES);
 }
 
+/** A tier of the multi-child discount - see `BusinessSettings.multiChildDiscountTiers`. */
+export interface MultiChildTier {
+  minChildren: number;
+  percentage: number;
+}
+
+/**
+ * The multi-child discount percentage for `childCount` children: the tier with the highest
+ * `minChildren` not above the count, so the top tier covers every larger family. 0 below
+ * the first tier, or when no tiers are set.
+ */
+export function multiChildPercentage(tiers: MultiChildTier[], childCount: number): number {
+  let percentage = 0;
+  let best = 0;
+  for (const tier of tiers) {
+    if (tier.minChildren <= childCount && tier.minChildren > best) {
+      best = tier.minChildren;
+      percentage = tier.percentage;
+    }
+  }
+  return percentage;
+}
+
+type CountableLine = { kind?: string | null; quantity?: number; playSessionId?: unknown; lineTotal: number };
+
+/**
+ * Children playing on a bill, for the multi-child discount: a ticket line counts its
+ * children (`quantity`, several on a family ticket), a flat PLAY line counts one child -
+ * the same rule `CHILDREN_ON_BILL` reports by. Group visits (negotiated rate) and products
+ * count nobody, since the discount is on play time only.
+ */
+export function playChildrenOnItems(items: CountableLine[]): number {
+  return items.reduce((count, item) => {
+    if (resolveItemKind(item) !== BillItemKind.PLAY) return count;
+    const isTicketLine = item.playSessionId !== null && item.playSessionId !== undefined;
+    return count + (isTicketLine ? Math.max(item.quantity ?? 1, 1) : 1);
+  }, 0);
+}
+
+/** What the multi-child discount is a percentage of: the PLAY lines, after best price. */
+export function playBase(items: CountableLine[]): number {
+  return sumMinorUnits(
+    items.filter((item) => resolveItemKind(item) === BillItemKind.PLAY).map((item) => item.lineTotal),
+  );
+}
+
 export interface BillTotals {
   subtotal: number;
+  /** Every discount on the bill: `multiChildDiscount + manualDiscount`. */
   discount: number;
+  /** The automatic multi-child discount, on play time only. */
+  multiChildDiscount: number;
+  /** The cashier's discount, applied to what was left after the automatic one. */
+  manualDiscount: number;
   tax: number;
   grandTotal: number;
 }
 
+/**
+ * A bill's totals. The automatic multi-child discount comes off the play lines first; the
+ * cashier's discount then applies to what is left, so a FIXED discount is capped there and
+ * a PERCENTAGE one never discounts money already discounted. `discount` is the sum of both,
+ * which keeps every report and the `subtotal - discount + tax` charge exactly as before. With
+ * no multi-child percentage this is the calculation it always was.
+ */
 export function calculateBillTotals(params: {
-  items: Pick<BillItemPublic, 'lineTotal'>[];
+  items: CountableLine[];
   discountType: DiscountType;
   discountValue: number;
   taxEnabled: boolean;
   taxPercentage: number;
+  /** The snapshotted multi-child percentage; 0 or absent for none. */
+  multiChildPercentage?: number;
 }): BillTotals {
   const subtotal = calculateSubtotal(params.items);
-  const discount = calculateDiscountAmount(subtotal, params.discountType, params.discountValue);
+  const multiChildDiscount = params.multiChildPercentage
+    ? Math.min(calculatePercentage(playBase(params.items), params.multiChildPercentage), subtotal)
+    : 0;
+  const afterAuto = subtotal - multiChildDiscount;
+  const manualDiscount = calculateDiscountAmount(afterAuto, params.discountType, params.discountValue);
+  const discount = multiChildDiscount + manualDiscount;
   const taxableBase = Math.max(subtotal - discount, 0);
   const tax = calculateTax(taxableBase, params.taxEnabled, params.taxPercentage);
   const grandTotal = Math.max(taxableBase + tax, 0);
 
-  return { subtotal, discount, tax, grandTotal };
+  return { subtotal, discount, multiChildDiscount, manualDiscount, tax, grandTotal };
 }

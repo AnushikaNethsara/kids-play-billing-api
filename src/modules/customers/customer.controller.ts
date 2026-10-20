@@ -21,6 +21,10 @@ export const customerController = {
     sendSuccess(res, customers, { meta });
   },
 
+  async segmentCounts(_req: Request, res: Response): Promise<void> {
+    sendSuccess(res, await customerService.segmentCounts());
+  },
+
   async getById(req: Request, res: Response): Promise<void> {
     const customer = await customerService.getById(req.params.id);
     sendSuccess(res, customer);

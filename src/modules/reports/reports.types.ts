@@ -1,3 +1,4 @@
+import type { ExpenseCategoryRow } from '../../common/reporting/expenseFilters';
 import type { ReportPeriod } from '../../common/utils/dateRange';
 import type { BillStatus } from '../../common/constants/billStatus';
 import type { PaymentMethod } from '../../common/constants/paymentMethods';
@@ -22,6 +23,8 @@ export const ReportName = {
   SESSIONS: 'sessions',
   PERIOD_SUMMARY: 'period-summary',
   CUSTOMERS: 'customers',
+  PROFIT_LOSS: 'profit-loss',
+  EXPENSES: 'expenses',
 } as const;
 
 export type ReportName = (typeof ReportName)[keyof typeof ReportName];
@@ -65,6 +68,8 @@ export const ExceptionType = {
   FORCE_CLOSE: 'FORCE_CLOSE',
   LATE_PAYMENT: 'LATE_PAYMENT',
   BILL_CORRECTION: 'BILL_CORRECTION',
+  EXPENSE_VOID: 'EXPENSE_VOID',
+  EXPENSE_EDIT: 'EXPENSE_EDIT',
 } as const;
 
 export type ExceptionType = (typeof ExceptionType)[keyof typeof ExceptionType];
@@ -191,6 +196,33 @@ export interface DailyCloseReport {
    * the copy printed at closing time; this list is what explains the difference.
    */
   adjustments: DailyCloseAdjustment[];
+  /** Active expenses dated this day, and what they did to the drawer. */
+  expenses: DailyCloseExpenses;
+}
+
+export interface DailyCloseExpense {
+  id: string;
+  categoryName: string;
+  description: string;
+  vendor: string;
+  paymentMethod: string;
+  amount: number;
+  status: string;
+  /** True when the expense was entered, edited or voided after the day ended. */
+  changedAfterClose: boolean;
+}
+
+export interface DailyCloseExpenses {
+  /** Active expenses dated this day, plus any dated this day and voided after it ended. */
+  items: DailyCloseExpense[];
+  /** Active expenses only. Equals `summary.expenses`. */
+  total: number;
+  cashTotal: number;
+  /**
+   * Cash the drawer should hold at close: cash taken on PAID bills less cash expenses.
+   * There is no float or counted amount yet, so this is the expected figure only.
+   */
+  expectedCashInDrawer: number;
 }
 
 // ---- Exceptions -----------------------------------------------------------------
@@ -198,9 +230,9 @@ export interface DailyCloseReport {
 export interface ExceptionRow {
   type: ExceptionType;
   occurredAt: Date;
-  entityType: 'BILL' | 'PLAY_SESSION';
+  entityType: 'BILL' | 'PLAY_SESSION' | 'EXPENSE';
   entityId: string;
-  /** Bill number, ticket code, or ticket codes for a force-close. */
+  /** Bill number, ticket code, ticket codes for a force-close, or an expense's category and day. */
   reference: string;
   amount: number | null;
   /** Who performed the action. */
@@ -251,7 +283,7 @@ export interface SessionReportRow {
 export type SummaryGroupBy = 'day' | 'week' | 'month';
 
 /** Which table a CSV export carries: the per-period rows, or one range-wide breakdown. */
-export type SummaryBreakdown = 'period' | 'cashier' | 'package' | 'product' | 'paymentMethod';
+export type SummaryBreakdown = 'period' | 'cashier' | 'package' | 'product' | 'paymentMethod' | 'expenseCategory';
 
 export interface PeriodSummaryQuery extends ReportRangeQuery {
   groupBy?: SummaryGroupBy;
@@ -274,6 +306,10 @@ export interface PeriodBucket {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket (cash basis). */
+  expenses: number;
+  /** `netRevenue - expenses`. */
+  netProfit: number;
   /** Tax on PAID and REFUNDED bills: cash + card + bank + other = net + tax. */
   tax: number;
   /** Bills still PAID, by method. */
@@ -304,6 +340,8 @@ export interface PeriodSummaryReport {
   packages: PackagePerformance[];
   products: ProductPerformance[];
   sessions: SessionSummary;
+  /** Active expenses in range by category, largest first. */
+  expensesByCategory: ExpenseCategoryRow[];
 }
 
 // ---- Customers --------------------------------------------------------------------
@@ -369,4 +407,65 @@ export interface CustomerReport {
    * is counted once, at its first check-in.
    */
   dayHourHeatmap: { weekday: number; hour: number; newVisits: number; returningVisits: number }[];
+}
+
+// ---- Profit & loss and expenses ---------------------------------------------------
+
+export interface ProfitLossQuery extends ReportRangeQuery {
+  format: ReportFormat;
+}
+
+/**
+ * Income less expenses for a range, on a cash basis. Every income figure is the
+ * dashboard summary's for the same range and `expenses.total` is `summary.expenses`, so
+ * the bottom line is the dashboard's net profit by construction.
+ */
+export interface ProfitLossReport {
+  header: ReportHeader;
+  income: {
+    play: number;
+    group: number;
+    product: number;
+    /** play + group + product, before any deduction. */
+    gross: number;
+    discounts: number;
+    /** The automatic multi-child part of `discounts`. */
+    multiChildDiscounts: number;
+    writeOffs: number;
+    refunds: number;
+    netRevenue: number;
+  };
+  expenses: { byCategory: ExpenseCategoryRow[]; total: number; count: number };
+  netProfit: number;
+  /** Basis points (2550 = 25.50%), or null with no revenue. */
+  profitMarginBasisPoints: number | null;
+}
+
+/** One line of the P&L as a CSV row. */
+export interface ProfitLossLine {
+  section: 'Income' | 'Deductions' | 'Expenses' | 'Result';
+  line: string;
+  amount: number;
+}
+
+export interface ExpenseRegisterQuery extends ReportRangeQuery {
+  format: ReportFormat;
+  status: 'ACTIVE' | 'VOIDED' | 'ALL';
+  categoryId?: string;
+  paymentMethod?: PaymentMethod;
+}
+
+export interface ExpenseRegisterRow {
+  spentOn: string;
+  categoryName: string;
+  description: string;
+  vendor: string;
+  reference: string;
+  paymentMethod: PaymentMethod;
+  amount: number;
+  status: string;
+  enteredBy: string;
+  createdAt: Date;
+  voidedAt: Date | null;
+  voidReason: string;
 }

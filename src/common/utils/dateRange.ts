@@ -86,3 +86,27 @@ export function resolveDateRange(
 export function formatBusinessDate(date: Date, timezone: string, format = 'yyyy-MM-dd'): string {
   return DateTime.fromJSDate(date).setZone(timezone).toFormat(format);
 }
+
+export interface ResolvedDayRange {
+  /** First business day in range, `YYYY-MM-DD`. */
+  fromDay: string;
+  /** Last business day in range, `YYYY-MM-DD`, inclusive. */
+  toDay: string;
+}
+
+/**
+ * The same range as `resolveDateRange`, as inclusive business-day strings. For records
+ * dated by day rather than by instant (expenses), which compare as plain text.
+ */
+export function resolveDayRange(
+  timezone: string,
+  options: { period?: string; from?: string; to?: string },
+): ResolvedDayRange {
+  const { start, end } = resolveDateRange(timezone, options);
+  return { fromDay: formatBusinessDate(start, timezone), toDay: formatBusinessDate(end, timezone) };
+}
+
+/** Today's date in the business timezone, `YYYY-MM-DD`. */
+export function businessToday(timezone: string): string {
+  return DateTime.now().setZone(timezone).toFormat('yyyy-MM-dd');
+}

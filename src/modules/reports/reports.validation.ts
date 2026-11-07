@@ -59,9 +59,22 @@ export const customerReportQuerySchema = z.object({
   groupBy: z.enum(['day', 'week', 'month']).optional(),
 });
 
+export const profitLossQuerySchema = z.object({
+  ...rangeShape,
+  format: exportShape.format,
+});
+
+export const expenseRegisterQuerySchema = z.object({
+  ...rangeShape,
+  format: exportShape.format,
+  status: z.enum(['ACTIVE', 'VOIDED', 'ALL']).default('ACTIVE'),
+  categoryId: z.string().length(24, 'Invalid id').optional(),
+  paymentMethod: z.nativeEnum(PaymentMethod).optional(),
+});
+
 export const periodSummaryQuerySchema = z.object({
   ...rangeShape,
   format: exportShape.format,
   groupBy: z.enum(['day', 'week', 'month']).optional(),
-  breakdown: z.enum(['period', 'cashier', 'package', 'product', 'paymentMethod']).default('period'),
+  breakdown: z.enum(['period', 'cashier', 'package', 'product', 'paymentMethod', 'expenseCategory']).default('period'),
 });

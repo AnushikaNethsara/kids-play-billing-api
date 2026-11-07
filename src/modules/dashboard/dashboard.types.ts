@@ -29,6 +29,15 @@ export interface DashboardSummary {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the period (cash basis). */
+  expenses: number;
+  /** The part of `expenses` paid in cash, out of the drawer. */
+  cashExpenses: number;
+  expenseCount: number;
+  /** `netRevenue - expenses`. Can be negative. */
+  netProfit: number;
+  /** `netProfit / netRevenue` in basis points (2550 = 25.50%), or null with no revenue. */
+  profitMarginBasisPoints: number | null;
   paidBillsCount: number;
   cancelledBillsCount: number;
   refundedBillsCount: number;
@@ -95,6 +104,10 @@ export interface DailyRevenuePoint {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket. */
+  expenses: number;
+  /** `netRevenue - expenses`. */
+  netProfit: number;
   billCount: number;
   childrenCount: number;
 }
@@ -107,6 +120,10 @@ export interface MonthlyRevenuePoint {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket. */
+  expenses: number;
+  /** `netRevenue - expenses`. */
+  netProfit: number;
   billCount: number;
   childrenCount: number;
 }
@@ -119,6 +136,10 @@ export interface YearlyRevenuePoint {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket. */
+  expenses: number;
+  /** `netRevenue - expenses`. */
+  netProfit: number;
   billCount: number;
   childrenCount: number;
 }

@@ -3,6 +3,8 @@ import { connectDatabase, disconnectDatabase } from '../src/database/connection'
 import { UserModel } from '../src/modules/users/user.model';
 import { PlayPackageModel } from '../src/modules/play-packages/playPackage.model';
 import { ProductModel } from '../src/modules/products/product.model';
+import { ExpenseCategoryModel } from '../src/modules/expenses/expenseCategory.model';
+import { DEFAULT_EXPENSE_CATEGORIES } from '../src/modules/expenses/expenseCategory.service';
 import { settingsRepository } from '../src/modules/settings/settings.repository';
 import { UserRole } from '../src/common/constants/roles';
 import {
@@ -93,6 +95,19 @@ async function seedProducts() {
   }
 }
 
+async function seedExpenseCategories() {
+  for (const [index, name] of DEFAULT_EXPENSE_CATEGORIES.entries()) {
+    const existing = await ExpenseCategoryModel.findOne({ name }).collation({ locale: 'en', strength: 2 });
+    if (existing) {
+      logger.info(`Expense category "${name}" already exists, skipping`);
+      continue;
+    }
+
+    await ExpenseCategoryModel.create({ name, sortOrder: index + 1, createdBy: null, updatedBy: null });
+    logger.info(`Created expense category: ${name}`);
+  }
+}
+
 async function seedSettings() {
   await settingsRepository.getOrCreate();
   logger.info('Ensured default business settings exist');
@@ -104,6 +119,7 @@ async function run() {
   await seedUsers();
   await seedPlayPackages();
   await seedProducts();
+  await seedExpenseCategories();
   await seedSettings();
 
   logger.warn(

@@ -16,6 +16,10 @@ import {
   packageBreakdownColumns,
   paymentMethodBreakdownColumns,
   periodSummaryColumns,
+  expenseCategoryBreakdownColumns,
+  expenseRegisterColumns,
+  profitLossColumns,
+  profitLossLines,
   productBreakdownColumns,
   sessionColumns,
 } from './reports.columns';
@@ -29,6 +33,8 @@ import {
   type ExceptionsQuery,
   type PeriodSummaryQuery,
   type SessionReportQuery,
+  type ProfitLossQuery,
+  type ExpenseRegisterQuery,
 } from './reports.types';
 
 function requireActor(req: Request) {
@@ -156,6 +162,13 @@ export const reportsController = {
           rows: fromArray(report.paymentMethods),
         });
         return;
+      case 'expenseCategory':
+        await sendCsv(req, res, {
+          ...base,
+          columns: expenseCategoryBreakdownColumns(),
+          rows: fromArray(report.expensesByCategory),
+        });
+        return;
       default:
         // One row per bucket, then the range-wide TOTAL row.
         await sendCsv(req, res, {
@@ -242,5 +255,45 @@ export const reportsController = {
 
     const { rows, pagination } = await reportsService.getSessionReport(query);
     sendSuccess(res, rows, { meta: pagination });
+  },
+
+  async profitLoss(req: Request, res: Response): Promise<void> {
+    const query = req.query as unknown as ProfitLossQuery;
+    const { range, report } = await reportsService.getProfitLoss(query, requireActor(req));
+
+    if (query.format !== 'csv') {
+      sendSuccess(res, report);
+      return;
+    }
+    await sendCsv(req, res, {
+      report: ReportName.PROFIT_LOSS,
+      range,
+      columns: profitLossColumns(),
+      rows: fromArray(profitLossLines(report)),
+      options: {},
+    });
+  },
+
+  async expenses(req: Request, res: Response): Promise<void> {
+    const query = req.query as unknown as ExpenseRegisterQuery;
+    const { range, rows, total, truncated } = await reportsService.getExpenseRegister(query);
+    const options = {
+      status: query.status,
+      categoryId: query.categoryId ?? null,
+      paymentMethod: query.paymentMethod ?? null,
+      truncated,
+    };
+
+    if (query.format !== 'csv') {
+      sendSuccess(res, rows, { meta: { total, count: rows.length, truncated } });
+      return;
+    }
+    await sendCsv(req, res, {
+      report: ReportName.EXPENSES,
+      range,
+      columns: expenseRegisterColumns(range.timezone),
+      rows: fromArray(rows),
+      options,
+    });
   },
 };

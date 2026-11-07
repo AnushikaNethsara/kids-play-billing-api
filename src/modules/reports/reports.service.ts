@@ -1,3 +1,5 @@
+import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { ExpenseModel, ExpenseStatus, type ExpenseDocument } from '../expenses/expense.model';
 import { Types, type FilterQuery } from 'mongoose';
 import { BillModel, type BillDocument, type BillItemSubdocument } from '../bills/bill.model';
 import {
@@ -50,7 +52,12 @@ import {
   type ReportRangeQuery,
   type SessionReportQuery,
   type SessionReportRow,
+  ExpenseRegisterQuery,
+  ExpenseRegisterRow,
+  ProfitLossQuery,
+  ProfitLossReport,
 } from './reports.types';
+import { expensesByCategory } from '../../common/reporting/expenseFilters';
 
 /** Longest range any report accepts. A year of bills is ~100k rows - fine to stream, not to preview. */
 const MAX_RANGE_DAYS = 366;
@@ -302,6 +309,26 @@ function percentOf(part: number, whole: number): string {
   return `${(Math.round((part * 1000) / whole) / 10).toFixed(1)}% of subtotal`;
 }
 
+type ExpenseSnapshot = Partial<
+  Record<'spentOn' | 'categoryName' | 'description' | 'vendor' | 'reference' | 'paymentMethod', string> & {
+    amount: number;
+  }
+>;
+
+const EXPENSE_EDIT_FIELDS = [
+  'spentOn',
+  'amount',
+  'categoryName',
+  'description',
+  'vendor',
+  'reference',
+  'paymentMethod',
+] as const;
+
+function expenseReference(expense: ExpenseSnapshot): string {
+  return [expense.categoryName, expense.spentOn].filter(Boolean).join(' ');
+}
+
 export const reportsService = {
   resolveReportRange,
 
@@ -311,6 +338,87 @@ export const reportsService = {
   ): Promise<{ range: ResolvedReportRange; report: PeriodSummaryReport }> {
     const range = await resolveReportRange(query);
     return { range, report: await getPeriodSummary(query, range, actor) };
+  },
+
+  async getProfitLoss(
+    query: ProfitLossQuery,
+    actor: AuthenticatedUser,
+  ): Promise<{ range: ResolvedReportRange; report: ProfitLossReport }> {
+    const range = await resolveReportRange(query);
+    const rangeQuery = { from: range.fromDate, to: range.toDate };
+    const [summary, byCategory] = await Promise.all([
+      dashboardService.getSummary(rangeQuery),
+      expensesByCategory(range.fromDate, range.toDate),
+    ]);
+
+    return {
+      range,
+      report: {
+        header: {
+          businessName: range.businessName,
+          timezone: range.timezone,
+          from: range.fromDate,
+          to: range.toDate,
+          generatedAt: new Date(),
+          generatedBy: actor.name,
+        },
+        income: {
+          play: summary.revenueByKind.play,
+          group: summary.revenueByKind.group,
+          product: summary.revenueByKind.product,
+          gross: summary.grossRevenue,
+          discounts: summary.discounts,
+          multiChildDiscounts: summary.multiChildDiscounts,
+          writeOffs: summary.writeOffs,
+          refunds: summary.refunds,
+          netRevenue: summary.netRevenue,
+        },
+        expenses: { byCategory, total: summary.expenses, count: summary.expenseCount },
+        netProfit: summary.netProfit,
+        profitMarginBasisPoints: summary.profitMarginBasisPoints,
+      },
+    };
+  },
+
+  /** Every expense in range, oldest day first. Capped like the exceptions report. */
+  async getExpenseRegister(
+    query: ExpenseRegisterQuery,
+  ): Promise<{ range: ResolvedReportRange; rows: ExpenseRegisterRow[]; total: number; truncated: boolean }> {
+    const range = await resolveReportRange(query);
+    const match: FilterQuery<ExpenseDocument> = {
+      spentOn: { $gte: range.fromDate, $lte: range.toDate },
+    };
+    if (query.status !== 'ALL') match.status = query.status;
+    if (query.categoryId) match.categoryId = new Types.ObjectId(query.categoryId);
+    if (query.paymentMethod) match.paymentMethod = query.paymentMethod;
+
+    const expenses = await ExpenseModel.find(match)
+      .sort({ spentOn: 1, createdAt: 1 })
+      .limit(EXCEPTIONS_ROW_CAP + 1)
+      .lean();
+    const truncated = expenses.length > EXCEPTIONS_ROW_CAP;
+    const kept = expenses.slice(0, EXCEPTIONS_ROW_CAP);
+    const names = await resolveUserNames(kept.map((expense) => expense.createdBy));
+
+    const rows = kept.map(
+      (expense): ExpenseRegisterRow => ({
+        spentOn: expense.spentOn,
+        categoryName: expense.categoryName,
+        description: expense.description,
+        vendor: expense.vendor,
+        reference: expense.reference,
+        paymentMethod: expense.paymentMethod,
+        amount: expense.amount,
+        status: expense.status,
+        enteredBy: nameOf(names, expense.createdBy),
+        createdAt: expense.createdAt,
+        voidedAt: expense.voidedAt,
+        voidReason: expense.voidReason,
+      }),
+    );
+    // The total of what is listed; voided rows only count when voided rows were asked for.
+    const total = rows.reduce((sum, row) => sum + row.amount, 0);
+    return { range, rows, total, truncated };
   },
 
   async getCustomerReport(
@@ -336,6 +444,14 @@ export const reportsService = {
     ]);
 
     const revenueMatch = revenueRecognizedMatch(start, end);
+    // Active ones are the day's expenses; a voided one is listed only when the void came
+    // after the day ended, since that is a change a reprint has to explain.
+    const dayExpenses = await ExpenseModel.find({
+      spentOn: range.fromDate,
+      $or: [{ status: ExpenseStatus.ACTIVE }, { status: ExpenseStatus.VOIDED, voidedAt: { $gt: end } }],
+    })
+      .sort({ createdAt: 1 })
+      .lean();
     const [firstBill, lastBill, openDrafts, activeSessions, adjustedBills, correctedBills] = await Promise.all([
       BillModel.findOne(revenueMatch, { billNumber: 1 }).sort({ paidAt: 1 }).lean(),
       BillModel.findOne(revenueMatch, { billNumber: 1 }).sort({ paidAt: -1 }).lean(),
@@ -430,6 +546,22 @@ export const reportsService = {
         cashierName: session.checkInCashierName,
       })),
       adjustments,
+      expenses: {
+        items: dayExpenses.map((expense) => ({
+          id: expense._id.toString(),
+          categoryName: expense.categoryName,
+          description: expense.description,
+          vendor: expense.vendor,
+          paymentMethod: expense.paymentMethod,
+          amount: expense.amount,
+          status: expense.status,
+          changedAfterClose: expense.updatedAt.getTime() > end.getTime(),
+        })),
+        total: summary.expenses,
+        cashTotal: summary.cashExpenses,
+        expectedCashInDrawer:
+          (paymentMethods.find((row) => row.paymentMethod === PaymentMethod.CASH)?.amount ?? 0) - summary.cashExpenses,
+      },
     };
   },
 
@@ -503,7 +635,8 @@ export const reportsService = {
     const inRange = { $gte: start, $lte: end };
     const none = Promise.resolve([] as never[]);
 
-    const [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected] = await Promise.all([
+    const [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected, expenseVoids, expenseEdits] =
+      await Promise.all([
       wants(ExceptionType.DISCOUNT)
         ? BillModel.find({ ...revenueRecognizedMatch(start, end), discount: { $gt: 0 } })
             .limit(EXCEPTIONS_ROW_CAP)
@@ -542,7 +675,18 @@ export const reportsService = {
             .limit(EXCEPTIONS_ROW_CAP)
             .lean()
         : none,
-    ]);
+      // Voiding or shrinking an expense raises profit after the fact, so both are listed.
+      wants(ExceptionType.EXPENSE_VOID)
+        ? AuditLogModel.find({ action: AuditAction.EXPENSE_VOIDED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
+      wants(ExceptionType.EXPENSE_EDIT)
+        ? AuditLogModel.find({ action: AuditAction.EXPENSE_UPDATED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
+      ]);
 
     const names = await resolveUserNames([
       ...refunded.map((bill) => bill.refundedBy),
@@ -689,9 +833,54 @@ export const reportsService = {
           detail: `Changed ${(metadata.changes ?? []).map((change) => change.field).join(', ')}`,
         };
       }),
+      ...expenseVoids.map((log): ExceptionRow => {
+        const before = (log.before ?? {}) as ExpenseSnapshot;
+        const metadata = (log.metadata ?? {}) as { reason?: string };
+        return {
+          type: ExceptionType.EXPENSE_VOID,
+          occurredAt: log.createdAt,
+          entityType: 'EXPENSE',
+          entityId: log.entityId,
+          reference: expenseReference(before),
+          amount: before.amount ?? null,
+          actorName: log.userName,
+          cashierName: '',
+          reason: metadata.reason ?? '',
+          detail: before.description ?? '',
+        };
+      }),
+      ...expenseEdits.map((log): ExceptionRow => {
+        const before = (log.before ?? {}) as ExpenseSnapshot;
+        const after = (log.after ?? {}) as ExpenseSnapshot;
+        const changed = EXPENSE_EDIT_FIELDS.filter((field) => before[field] !== after[field]);
+        return {
+          type: ExceptionType.EXPENSE_EDIT,
+          occurredAt: log.createdAt,
+          entityType: 'EXPENSE',
+          entityId: log.entityId,
+          reference: expenseReference(after),
+          // The change to the amount: negative when the expense was made smaller.
+          amount: (after.amount ?? 0) - (before.amount ?? 0),
+          actorName: log.userName,
+          cashierName: '',
+          reason: '',
+          detail: changed.length ? `Changed ${changed.join(', ')}` : 'No field changed',
+        };
+      }),
     ].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
-    const sources = [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected];
+    const sources = [
+      discounted,
+      refunded,
+      cancelled,
+      testFlagged,
+      voided,
+      forceClosed,
+      latePaid,
+      corrected,
+      expenseVoids,
+      expenseEdits,
+    ];
     const truncated = rows.length > EXCEPTIONS_ROW_CAP || sources.some((source) => source.length >= EXCEPTIONS_ROW_CAP);
 
     const countsByType = Object.fromEntries(Object.values(ExceptionType).map((type) => [type, 0])) as Record<

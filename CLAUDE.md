@@ -46,7 +46,7 @@ controllers), `*.controller.ts` (thin, maps req/res to service calls), `*.valida
 (Zod schemas), `*.routes.ts` (Express router + inline `@openapi` JSDoc), `*.types.ts`.
 
 Modules: `auth`, `users`, `play-packages`, `play-sessions`, `products`, `customers`,
-`bills`, `dashboard`, `reports`, `settings`, `audit-logs`. Bill lines have a `kind` (`PLAY`,
+`bills`, `dashboard`, `reports`, `expenses`, `settings`, `audit-logs`. Bill lines have a `kind` (`PLAY`,
 `GROUP`, `PRODUCT`; a missing kind is `PLAY`). See `../docs/custom-bills.md` before
 touching bill items, dashboard counts or session extras. `src/routes/index.ts` mounts all of them under `/api/v1`.
 Cross-cutting code lives in `src/common/` (errors, logger, money/pagination/date-range

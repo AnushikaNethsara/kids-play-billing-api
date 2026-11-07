@@ -6,6 +6,9 @@ import type {
   BillRegisterRow,
   CustomerReportBucket,
   ExceptionRow,
+  ExpenseRegisterRow,
+  ProfitLossLine,
+  ProfitLossReport,
   PeriodBucket,
   SessionReportRow,
 } from './reports.types';
@@ -15,6 +18,7 @@ import type {
   PaymentMethodBreakdown,
   ProductPerformance,
 } from '../dashboard/dashboard.types';
+import type { ExpenseCategoryRow } from '../../common/reporting/expenseFilters';
 
 /**
  * Column layouts for every CSV export. Money is written as plain decimals in major units
@@ -140,6 +144,8 @@ export function periodSummaryColumns(): CsvColumn<PeriodBucket>[] {
     { header: 'Discounts', kind: 'raw', value: (row) => money(row.discounts) },
     { header: 'Refunds', kind: 'raw', value: (row) => money(row.refunds) },
     { header: 'Net', kind: 'raw', value: (row) => money(row.netRevenue) },
+    { header: 'Expenses', kind: 'raw', value: (row) => money(row.expenses) },
+    { header: 'Net profit', kind: 'raw', value: (row) => money(row.netProfit) },
     { header: 'Tax', kind: 'raw', value: (row) => money(row.tax) },
     { header: 'Cash', kind: 'raw', value: (row) => money(row.cashAmount) },
     { header: 'Card', kind: 'raw', value: (row) => money(row.cardAmount) },
@@ -153,6 +159,14 @@ export function periodSummaryColumns(): CsvColumn<PeriodBucket>[] {
     { header: 'Play minutes', kind: 'raw', value: (row) => row.playMinutes },
     { header: 'Minimum applied', kind: 'raw', value: (row) => row.minimumAppliedCount },
     { header: 'Tickets voided', kind: 'raw', value: (row) => row.voidedCount },
+  ];
+}
+
+export function expenseCategoryBreakdownColumns(): CsvColumn<ExpenseCategoryRow>[] {
+  return [
+    { header: 'Category', value: (row) => row.categoryName },
+    { header: 'Expenses', kind: 'raw', value: (row) => row.count },
+    { header: 'Amount', kind: 'raw', value: (row) => money(row.amount) },
   ];
 }
 
@@ -188,5 +202,54 @@ export function paymentMethodBreakdownColumns(): CsvColumn<PaymentMethodBreakdow
     { header: 'Payment method', value: (row) => row.paymentMethod },
     { header: 'Bills', kind: 'raw', value: (row) => row.count },
     { header: 'Amount', kind: 'raw', value: (row) => money(row.amount) },
+  ];
+}
+
+/**
+ * The P&L as one row per line, top to bottom. Deductions and expenses are written as
+ * positive amounts under their section; the Result lines carry the sign.
+ */
+export function profitLossLines(report: ProfitLossReport): ProfitLossLine[] {
+  const { income, expenses } = report;
+  return [
+    { section: 'Income', line: 'Play', amount: income.play },
+    { section: 'Income', line: 'Group visits', amount: income.group },
+    { section: 'Income', line: 'Products', amount: income.product },
+    { section: 'Income', line: 'Gross revenue', amount: income.gross },
+    { section: 'Deductions', line: 'Discounts', amount: income.discounts },
+    { section: 'Deductions', line: 'Write-offs', amount: income.writeOffs },
+    { section: 'Deductions', line: 'Refunds', amount: income.refunds },
+    { section: 'Result', line: 'Net revenue', amount: income.netRevenue },
+    ...expenses.byCategory.map(
+      (row): ProfitLossLine => ({ section: 'Expenses', line: row.categoryName, amount: row.amount }),
+    ),
+    { section: 'Expenses', line: 'Total expenses', amount: expenses.total },
+    { section: 'Result', line: 'Net profit', amount: report.netProfit },
+  ];
+}
+
+export function profitLossColumns(): CsvColumn<ProfitLossLine>[] {
+  return [
+    { header: 'Section', value: (row) => row.section },
+    { header: 'Line', value: (row) => row.line },
+    { header: 'Amount', kind: 'raw', value: (row) => money(row.amount) },
+  ];
+}
+
+export function expenseRegisterColumns(timezone: string): CsvColumn<ExpenseRegisterRow>[] {
+  const date = dateCell(timezone);
+  return [
+    { header: 'Date', kind: 'raw', value: (row) => row.spentOn },
+    { header: 'Category', value: (row) => row.categoryName },
+    { header: 'Description', value: (row) => row.description },
+    { header: 'Vendor', value: (row) => row.vendor },
+    { header: 'Reference', value: (row) => row.reference },
+    { header: 'Payment method', value: (row) => row.paymentMethod },
+    { header: 'Amount', kind: 'raw', value: (row) => money(row.amount) },
+    { header: 'Status', value: (row) => row.status },
+    { header: 'Entered by', value: (row) => row.enteredBy },
+    { header: 'Entered at', kind: 'raw', value: (row) => date(row.createdAt) },
+    { header: 'Voided at', kind: 'raw', value: (row) => date(row.voidedAt) },
+    { header: 'Void reason', value: (row) => row.voidReason },
   ];
 }

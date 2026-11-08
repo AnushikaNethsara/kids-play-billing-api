@@ -7,6 +7,7 @@ import { UserRole } from '../../common/constants/roles';
 import {
   createBillSchema,
   createBillFromSessionsSchema,
+  createManualBillSchema,
   updateBillSchema,
   completeBillSchema,
   cancelBillSchema,
@@ -152,6 +153,72 @@ router.get('/', validate({ query: listBillsQuerySchema }), asyncHandler(billCont
  *       404: { description: One of the ticket codes is unknown }
  *       409: { description: A ticket was already checked out or was voided }
  */
+/**
+ * @openapi
+ * /bills/manual:
+ *   post:
+ *     summary: Enter a missed till bill from a paper record (admin-only)
+ *     description: >
+ *       Checks the tickets in at the recorded times, checks them out at checkOutAt, and pays
+ *       the bill dated to checkOutAt - so the bill number and the revenue day are the day it
+ *       happened, not the day it was entered. Priced by the server exactly like a till
+ *       checkout. Honours an Idempotency-Key header. Nothing is left behind if any step fails.
+ *     tags: [Bills]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: header, name: Idempotency-Key, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [tickets, checkOutAt, paymentMethod, reason]
+ *             properties:
+ *               tickets:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required: [playPackageId, childNames, checkInAt]
+ *                   properties:
+ *                     playPackageId: { type: string }
+ *                     childNames: { type: array, items: { type: string } }
+ *                     checkInAt: { type: string, format: date-time }
+ *                     extras:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           productId: { type: string }
+ *                           quantity: { type: integer }
+ *               checkOutAt: { type: string, format: date-time }
+ *               customer:
+ *                 type: object
+ *                 properties:
+ *                   parentName: { type: string }
+ *                   phoneNumber: { type: string }
+ *               discount:
+ *                 type: object
+ *                 properties:
+ *                   type: { type: string, enum: [NONE, PERCENTAGE, FIXED] }
+ *                   value: { type: number }
+ *               paymentMethod: { type: string, enum: [CASH, CARD, BANK_TRANSFER, OTHER] }
+ *               paidAmount: { type: integer, description: Minor units; at least the server total }
+ *               cashierId: { type: string, description: The cashier who took the money; defaults to the admin }
+ *               reason: { type: string, example: Till offline }
+ *               reference: { type: string, example: Book page 14 }
+ *               notes: { type: string }
+ *     responses:
+ *       201: { description: Bill recorded and paid }
+ *       403: { description: Admin only }
+ */
+router.post(
+  '/manual',
+  requireRole(UserRole.ADMIN),
+  validate({ body: createManualBillSchema }),
+  asyncHandler(billController.createManual),
+);
+
 router.post(
   '/from-sessions',
   validate({ body: createBillFromSessionsSchema }),

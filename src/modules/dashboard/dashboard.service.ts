@@ -42,6 +42,7 @@ import {
   profitMarginBasisPoints,
   toDayRange,
 } from '../../common/reporting/expenseFilters';
+import { cashAdjustmentTotals, cashAdjustmentsByDay } from '../../common/reporting/cashAdjustmentFilters';
 
 async function resolveRange(query: DashboardQuery) {
   const settings = await settingsService.getRaw();
@@ -54,7 +55,10 @@ export const dashboardService = {
     const { start, end, timezone } = await resolveRange(query);
     const match = revenueRecognizedMatch(start, end);
     const { fromDay, toDay } = toDayRange(start, end, timezone);
-    const expenses = await expenseTotals(fromDay, toDay);
+    const [expenses, cashAdjustments] = await Promise.all([
+      expenseTotals(fromDay, toDay),
+      cashAdjustmentTotals(fromDay, toDay),
+    ]);
 
     const [totals] = await BillModel.aggregate([
       { $match: match },
@@ -148,7 +152,8 @@ export const dashboardService = {
     const paidBillsCount = totals?.paidBillsCount ?? 0;
     const paidGrandTotalSum = totals?.paidGrandTotalSum ?? 0;
     const netRevenue = grossRevenue - discounts - writeOffs - refunds;
-    const netProfit = netRevenue - expenses.total;
+    // Cash over/short is not revenue, but it is money the business gained or lost.
+    const netProfit = netRevenue - expenses.total + cashAdjustments.net;
 
     return {
       grossRevenue,
@@ -160,6 +165,10 @@ export const dashboardService = {
       expenses: expenses.total,
       cashExpenses: expenses.cashAmount,
       expenseCount: expenses.count,
+      cashOverShort: cashAdjustments.net,
+      cashSurplus: cashAdjustments.surplus,
+      cashShortage: cashAdjustments.shortage,
+      cashAdjustmentCount: cashAdjustments.count,
       netProfit,
       profitMarginBasisPoints: profitMarginBasisPoints(netProfit, netRevenue),
       paidBillsCount,
@@ -231,15 +240,22 @@ export const dashboardService = {
       const label = dayToBucketLabel(day, groupBy);
       expensesByLabel.set(label, (expensesByLabel.get(label) ?? 0) + amount);
     }
+    const overShortByLabel = new Map<string, number>();
+    for (const { day, amount } of await cashAdjustmentsByDay(fromDay, toDay)) {
+      const label = dayToBucketLabel(day, groupBy);
+      overShortByLabel.set(label, (overShortByLabel.get(label) ?? 0) + amount);
+    }
     const empty = { grossRevenue: 0, discounts: 0, writeOffs: 0, refunds: 0, billCount: 0, childrenCount: 0 };
     const byLabel = new Map<string, typeof empty>(rows.map((row) => [row._id as string, row]));
     for (const label of expensesByLabel.keys()) if (!byLabel.has(label)) byLabel.set(label, empty);
+    for (const label of overShortByLabel.keys()) if (!byLabel.has(label)) byLabel.set(label, empty);
     const labels = [...byLabel.keys()].sort();
 
     return labels.map((label) => {
       const row = byLabel.get(label) ?? empty;
       const netRevenue = row.grossRevenue - row.discounts - row.writeOffs - row.refunds;
       const expenses = expensesByLabel.get(label) ?? 0;
+      const cashOverShort = overShortByLabel.get(label) ?? 0;
       const base = {
         grossRevenue: row.grossRevenue,
         discounts: row.discounts,
@@ -247,7 +263,8 @@ export const dashboardService = {
         refunds: row.refunds,
         netRevenue,
         expenses,
-        netProfit: netRevenue - expenses,
+        cashOverShort,
+        netProfit: netRevenue - expenses + cashOverShort,
         billCount: row.billCount,
         childrenCount: row.childrenCount,
       };

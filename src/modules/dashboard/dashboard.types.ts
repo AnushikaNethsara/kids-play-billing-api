@@ -34,7 +34,17 @@ export interface DashboardSummary {
   /** The part of `expenses` paid in cash, out of the drawer. */
   cashExpenses: number;
   expenseCount: number;
-  /** `netRevenue - expenses`. Can be negative. */
+  /**
+   * Net cash over/short found at reconciliation: active cash adjustments dated in the
+   * period. Positive is a surplus, negative a shortage. Not revenue - it goes into profit.
+   */
+  cashOverShort: number;
+  /** Sum of surpluses (>= 0). */
+  cashSurplus: number;
+  /** Sum of shortages (<= 0). */
+  cashShortage: number;
+  cashAdjustmentCount: number;
+  /** `netRevenue - expenses + cashOverShort`. Can be negative. */
   netProfit: number;
   /** `netProfit / netRevenue` in basis points (2550 = 25.50%), or null with no revenue. */
   profitMarginBasisPoints: number | null;
@@ -106,7 +116,9 @@ export interface DailyRevenuePoint {
   netRevenue: number;
   /** Active expenses dated in the bucket. */
   expenses: number;
-  /** `netRevenue - expenses`. */
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
   netProfit: number;
   billCount: number;
   childrenCount: number;
@@ -122,7 +134,9 @@ export interface MonthlyRevenuePoint {
   netRevenue: number;
   /** Active expenses dated in the bucket. */
   expenses: number;
-  /** `netRevenue - expenses`. */
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
   netProfit: number;
   billCount: number;
   childrenCount: number;
@@ -138,7 +152,9 @@ export interface YearlyRevenuePoint {
   netRevenue: number;
   /** Active expenses dated in the bucket. */
   expenses: number;
-  /** `netRevenue - expenses`. */
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
   netProfit: number;
   billCount: number;
   childrenCount: number;

@@ -73,6 +73,51 @@ export interface CreateBillFromSessionsInput {
   notes?: string;
 }
 
+/** Server-side options for `createDraftFromSessions`, never read from a request body. */
+export interface CreateDraftFromSessionsOptions {
+  /**
+   * The admin manual-bill path. Its explicit check-out time is the paper record's, not an
+   * abandoned ticket being closed, so it is not audited as a force-close.
+   */
+  manualEntry?: boolean;
+}
+
+/** One ticket from the paper book: a child (or a family) on one package. */
+export interface ManualBillTicketInput {
+  playPackageId: string;
+  childNames: string[];
+  /** ISO timestamp of the check-in written in the book. */
+  checkInAt: string;
+  /** Products sold onto the ticket, charged on this bill. */
+  extras?: Array<{ productId: string; quantity: number }>;
+}
+
+/**
+ * `POST /bills/manual`: a till bill that was missed and written on paper, entered by an
+ * admin later. Priced by the server from the package and the times, exactly like a normal
+ * checkout, and paid dated to `checkOutAt` so the revenue lands on the day it happened.
+ */
+export interface CreateManualBillInput {
+  tickets: ManualBillTicketInput[];
+  /** ISO timestamp of the check-out (and payment) written in the book. */
+  checkOutAt: string;
+  customer?: {
+    customerId?: string;
+    parentName?: string;
+    phoneNumber?: string;
+  };
+  discount?: CreateBillDiscountInput;
+  paymentMethod: PaymentMethod;
+  paidAmount?: number;
+  /** The cashier who actually took the money. Defaults to the admin entering the bill. */
+  cashierId?: string;
+  /** Why the bill is entered by hand, e.g. "Till offline". */
+  reason: string;
+  /** Where it is written down, e.g. "Book page 14". */
+  reference?: string;
+  notes?: string;
+}
+
 export interface UpdateBillInput {
   customer?: {
     customerId?: string;
@@ -227,6 +272,10 @@ export interface BillPublic {
   paymentRecordedAt: Date | null;
   paymentRecordedBy: string | null;
   paymentRecordedByName: string | null;
+  /** MANUAL on a bill back-entered by an admin from a paper record; TILL otherwise. */
+  entrySource: 'TILL' | 'MANUAL';
+  manualEntryReason: string | null;
+  manualEntryReference: string | null;
   /** Excluded from every dashboard figure and from the customer's lifetime spend. */
   isTestBill: boolean;
   testMarkedAt: Date | null;
@@ -264,6 +313,8 @@ export interface ListBillsQuery {
   isTimed?: boolean;
   /** Bills carrying at least one line of this kind. */
   kind?: BillItemKind;
+  /** MANUAL: only bills back-entered from a paper record. TILL: every other bill. */
+  entrySource?: 'TILL' | 'MANUAL';
   /**
    * Omitted shows both kinds, which is what the bills screen wants - a test bill is still
    * a real record an admin needs to be able to find. Only the dashboard passes `false`.

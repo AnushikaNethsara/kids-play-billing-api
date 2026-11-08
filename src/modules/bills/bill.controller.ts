@@ -3,12 +3,14 @@ import { billService } from './bill.service';
 import { receiptService } from './receipt.service';
 import { settingsService } from '../settings/settings.service';
 import { idempotencyService } from './idempotency.service';
+import { manualBillService } from './manualBill.service';
 import { sendSuccess } from '../../common/utils/apiResponse';
 import { AuthenticationError, AuthorizationError, NotFoundError } from '../../common/errors';
 import { UserRole } from '../../common/constants/roles';
 import type {
   CreateBillInput,
   CreateBillFromSessionsInput,
+  CreateManualBillInput,
   UpdateBillInput,
   CompleteBillInput,
   CancelBillInput,
@@ -111,6 +113,33 @@ export const billController = {
     sendSuccess(res, body, {
       statusCode,
       message: replayed ? 'Bill was already completed (idempotent replay)' : 'Bill completed successfully',
+    });
+  },
+
+  /**
+   * Admin back-entry of a missed till bill. Honours an Idempotency-Key header like
+   * completion does, so a double-submitted form records one bill, not two.
+   */
+  async createManual(req: Request, res: Response): Promise<void> {
+    const actor = requireActor(req);
+    const idempotencyKeyHeader = req.header(IDEMPOTENCY_HEADER);
+    const scopedKey = idempotencyKeyHeader ? `manual-bill:${actor.id}:${idempotencyKeyHeader}` : undefined;
+
+    const run = async () => {
+      const bill = await manualBillService.create(req.body as CreateManualBillInput, actor);
+      return { statusCode: 201, body: bill };
+    };
+
+    if (!scopedKey) {
+      const result = await run();
+      sendSuccess(res, result.body, { statusCode: 201, message: 'Manual bill recorded' });
+      return;
+    }
+
+    const { statusCode, body, replayed } = await idempotencyService.run(scopedKey, run);
+    sendSuccess(res, body, {
+      statusCode,
+      message: replayed ? 'Manual bill was already recorded (idempotent replay)' : 'Manual bill recorded',
     });
   },
 

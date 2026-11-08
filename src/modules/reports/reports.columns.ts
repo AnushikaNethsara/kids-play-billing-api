@@ -145,6 +145,7 @@ export function periodSummaryColumns(): CsvColumn<PeriodBucket>[] {
     { header: 'Refunds', kind: 'raw', value: (row) => money(row.refunds) },
     { header: 'Net', kind: 'raw', value: (row) => money(row.netRevenue) },
     { header: 'Expenses', kind: 'raw', value: (row) => money(row.expenses) },
+    { header: 'Cash over/short', kind: 'raw', value: (row) => money(row.cashOverShort) },
     { header: 'Net profit', kind: 'raw', value: (row) => money(row.netProfit) },
     { header: 'Tax', kind: 'raw', value: (row) => money(row.tax) },
     { header: 'Cash', kind: 'raw', value: (row) => money(row.cashAmount) },
@@ -220,6 +221,10 @@ export function profitLossLines(report: ProfitLossReport): ProfitLossLine[] {
     { section: 'Deductions', line: 'Write-offs', amount: income.writeOffs },
     { section: 'Deductions', line: 'Refunds', amount: income.refunds },
     { section: 'Result', line: 'Net revenue', amount: income.netRevenue },
+    // Signed: a surplus adds to profit, a shortage takes from it.
+    { section: 'Cash over/short', line: 'Cash surplus', amount: report.cashOverShort.surplus },
+    { section: 'Cash over/short', line: 'Cash shortage', amount: report.cashOverShort.shortage },
+    { section: 'Cash over/short', line: 'Net cash over/short', amount: report.cashOverShort.net },
     ...expenses.byCategory.map(
       (row): ProfitLossLine => ({ section: 'Expenses', line: row.categoryName, amount: row.amount }),
     ),

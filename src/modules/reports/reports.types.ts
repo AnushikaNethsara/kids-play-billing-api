@@ -70,6 +70,8 @@ export const ExceptionType = {
   BILL_CORRECTION: 'BILL_CORRECTION',
   EXPENSE_VOID: 'EXPENSE_VOID',
   EXPENSE_EDIT: 'EXPENSE_EDIT',
+  CASH_ADJUSTMENT_VOID: 'CASH_ADJUSTMENT_VOID',
+  CASH_ADJUSTMENT_EDIT: 'CASH_ADJUSTMENT_EDIT',
 } as const;
 
 export type ExceptionType = (typeof ExceptionType)[keyof typeof ExceptionType];
@@ -161,7 +163,8 @@ export interface BillRegisterTotals {
 export interface DailyCloseAdjustment {
   billId: string;
   billNumber: string | null;
-  action: 'CANCELLED' | 'REFUNDED' | 'CORRECTED';
+  /** MANUAL_ENTRY: a bill dated to this day but entered by an admin after the day ended. */
+  action: 'CANCELLED' | 'REFUNDED' | 'CORRECTED' | 'MANUAL_ENTRY';
   amount: number;
   occurredAt: Date;
   actorName: string;
@@ -198,6 +201,35 @@ export interface DailyCloseReport {
   adjustments: DailyCloseAdjustment[];
   /** Active expenses dated this day, and what they did to the drawer. */
   expenses: DailyCloseExpenses;
+  /** Cash surpluses and shortages recorded for this day at reconciliation. */
+  cashAdjustments: DailyCloseCashAdjustments;
+}
+
+export interface DailyCloseCashAdjustment {
+  id: string;
+  /** Signed minor units: + surplus, - shortage. */
+  amount: number;
+  reason: string;
+  notes: string;
+  status: string;
+  createdByName: string;
+  createdAt: Date;
+  /** True when the adjustment was entered, edited or voided after the day ended. */
+  changedAfterClose: boolean;
+}
+
+export interface DailyCloseCashAdjustments {
+  /** Active adjustments dated this day, plus any dated this day and voided after it ended. */
+  items: DailyCloseCashAdjustment[];
+  /** Active only. Equals `summary.cashOverShort`. */
+  net: number;
+  /** Cash the drawer should hold at close: `expenses.expectedCashInDrawer`. */
+  expectedCashInDrawer: number;
+  /**
+   * What was actually counted: expected plus the recorded over/short. Equals expected when
+   * nothing has been recorded for the day.
+   */
+  countedCashInDrawer: number;
 }
 
 export interface DailyCloseExpense {
@@ -230,7 +262,7 @@ export interface DailyCloseExpenses {
 export interface ExceptionRow {
   type: ExceptionType;
   occurredAt: Date;
-  entityType: 'BILL' | 'PLAY_SESSION' | 'EXPENSE';
+  entityType: 'BILL' | 'PLAY_SESSION' | 'EXPENSE' | 'CASH_ADJUSTMENT';
   entityId: string;
   /** Bill number, ticket code, ticket codes for a force-close, or an expense's category and day. */
   reference: string;
@@ -308,7 +340,9 @@ export interface PeriodBucket {
   netRevenue: number;
   /** Active expenses dated in the bucket (cash basis). */
   expenses: number;
-  /** `netRevenue - expenses`. */
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
   netProfit: number;
   /** Tax on PAID and REFUNDED bills: cash + card + bank + other = net + tax. */
   tax: number;
@@ -435,6 +469,8 @@ export interface ProfitLossReport {
     refunds: number;
     netRevenue: number;
   };
+  /** Net cash surplus (+) / shortage (-) from reconciliation. Equals `summary.cashOverShort`. */
+  cashOverShort: { net: number; surplus: number; shortage: number; count: number };
   expenses: { byCategory: ExpenseCategoryRow[]; total: number; count: number };
   netProfit: number;
   /** Basis points (2550 = 25.50%), or null with no revenue. */
@@ -443,7 +479,7 @@ export interface ProfitLossReport {
 
 /** One line of the P&L as a CSV row. */
 export interface ProfitLossLine {
-  section: 'Income' | 'Deductions' | 'Expenses' | 'Result';
+  section: 'Income' | 'Deductions' | 'Cash over/short' | 'Expenses' | 'Result';
   line: string;
   amount: number;
 }

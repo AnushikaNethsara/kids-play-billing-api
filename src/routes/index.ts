@@ -11,6 +11,7 @@ import { settingsRoutes } from '../modules/settings/settings.routes';
 import { auditLogRoutes } from '../modules/audit-logs/auditLog.routes';
 import { reportRoutes } from '../modules/reports/reports.routes';
 import { expenseCategoryRoutes, expenseRoutes } from '../modules/expenses/expense.routes';
+import { cashAdjustmentRoutes } from '../modules/cash-adjustments/cashAdjustment.routes';
 
 const router = Router();
 
@@ -27,5 +28,6 @@ router.use('/audit-logs', auditLogRoutes);
 router.use('/reports', reportRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/expense-categories', expenseCategoryRoutes);
+router.use('/cash-adjustments', cashAdjustmentRoutes);
 
 export const apiRouter = router;

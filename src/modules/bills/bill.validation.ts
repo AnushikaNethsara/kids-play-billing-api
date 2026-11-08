@@ -3,7 +3,11 @@ import { phoneNumberInputSchema } from '../../common/utils/phone';
 import { BillStatus, DiscountType } from '../../common/constants/billStatus';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { BillItemKind } from '../../common/constants/billItemKind';
-import { ticketCodeSchema } from '../play-sessions/playSession.validation';
+import {
+  MAX_CHILDREN_PER_TICKET,
+  MAX_EXTRAS_PER_SESSION,
+  ticketCodeSchema,
+} from '../play-sessions/playSession.validation';
 
 const objectIdSchema = z.string().length(24, 'Invalid id');
 
@@ -115,6 +119,38 @@ export const completeBillSchema = z.object({
   backdateToCheckout: z.boolean().optional(),
 });
 
+const manualTicketSchema = z.object({
+  playPackageId: objectIdSchema,
+  childNames: z
+    .array(z.string().trim().min(1, 'A child name cannot be empty').max(100))
+    .min(1, 'At least one child is required')
+    .max(MAX_CHILDREN_PER_TICKET, `A ticket can cover at most ${MAX_CHILDREN_PER_TICKET} children`),
+  checkInAt: z.string().datetime({ offset: true }),
+  extras: z
+    .array(z.object({ productId: objectIdSchema, quantity: z.number().int().min(1).max(MAX_PRODUCT_QUANTITY) }))
+    .max(MAX_EXTRAS_PER_SESSION)
+    .optional(),
+});
+
+export const createManualBillSchema = z.object({
+  tickets: z.array(manualTicketSchema).min(1, 'At least one ticket is required').max(20, 'Too many tickets on one bill'),
+  checkOutAt: z.string().datetime({ offset: true }),
+  customer: z
+    .object({
+      customerId: objectIdSchema.optional(),
+      parentName: z.string().trim().max(100).optional(),
+      phoneNumber: phoneNumberInputSchema.optional(),
+    })
+    .optional(),
+  discount: createBillDiscountSchema.optional(),
+  paymentMethod: z.nativeEnum(PaymentMethod),
+  paidAmount: z.number().int().min(0).optional(),
+  cashierId: objectIdSchema.optional(),
+  reason: z.string().trim().min(1, 'A reason is required').max(300),
+  reference: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(500).optional(),
+});
+
 export const cancelBillSchema = z.object({
   reason: z.string().trim().min(1, 'A cancellation reason is required').max(300),
 });
@@ -174,6 +210,7 @@ export const listBillsQuerySchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === 'true')),
+  entrySource: z.enum(['TILL', 'MANUAL']).optional(),
   sort: z.enum(['newest', 'oldest', 'total_desc', 'total_asc']).optional(),
 });
 

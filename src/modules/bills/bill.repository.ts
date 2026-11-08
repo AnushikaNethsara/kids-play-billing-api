@@ -140,6 +140,10 @@ export const billRepository = {
       });
     }
     if (itemConditions.length > 0) mongoFilter.$and = itemConditions;
+    if (filter.entrySource) {
+      // Bills from before the field existed carry no such key, and all came from the till.
+      mongoFilter.entrySource = filter.entrySource === 'MANUAL' ? 'MANUAL' : { $ne: 'MANUAL' };
+    }
     if (filter.isTestBill !== undefined) {
       // `$ne: true` rather than `false`: every bill written before this flag existed has
       // no such field at all, and matching on `false` would silently hide all of them.

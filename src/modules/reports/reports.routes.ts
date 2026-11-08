@@ -11,6 +11,8 @@ import {
   periodSummaryQuerySchema,
   customerReportQuerySchema,
   sessionReportQuerySchema,
+  profitLossQuerySchema,
+  expenseRegisterQuerySchema,
 } from './reports.validation';
 
 const router = Router();
@@ -120,7 +122,7 @@ router.get('/sessions', validate({ query: sessionReportQuerySchema }), asyncHand
  *       - { in: query, name: to, schema: { type: string } }
  *       - { in: query, name: groupBy, schema: { type: string, enum: [day, week, month] } }
  *       - { in: query, name: format, schema: { type: string, enum: [json, csv] } }
- *       - { in: query, name: breakdown, schema: { type: string, enum: [period, cashier, package, product, paymentMethod] } }
+ *       - { in: query, name: breakdown, schema: { type: string, enum: [period, cashier, package, product, paymentMethod, expenseCategory] } }
  *     responses:
  *       200: { description: Totals, buckets and breakdown tables }
  */
@@ -156,5 +158,46 @@ router.get(
   validate({ query: customerReportQuerySchema }),
   asyncHandler(reportsController.customers),
 );
+
+/**
+ * @openapi
+ * /reports/profit-loss:
+ *   get:
+ *     summary: Profit and loss for a period - net revenue less expenses (admin-only)
+ *     description: >
+ *       Cash basis. Income figures are the dashboard summary's for the same range, and
+ *       expenses are active expenses dated in range, by category. `format=csv` exports
+ *       one row per line.
+ *     tags: [Reports]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: query, name: period, schema: { type: string } }
+ *       - { in: query, name: from, schema: { type: string } }
+ *       - { in: query, name: to, schema: { type: string } }
+ *       - { in: query, name: format, schema: { type: string, enum: [json, csv] } }
+ *     responses:
+ *       200: { description: The profit and loss statement }
+ */
+router.get('/profit-loss', validate({ query: profitLossQuerySchema }), asyncHandler(reportsController.profitLoss));
+
+/**
+ * @openapi
+ * /reports/expenses:
+ *   get:
+ *     summary: Every expense dated in a period, for the accountant (admin-only)
+ *     tags: [Reports]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: query, name: period, schema: { type: string } }
+ *       - { in: query, name: from, schema: { type: string } }
+ *       - { in: query, name: to, schema: { type: string } }
+ *       - { in: query, name: status, schema: { type: string, enum: [ACTIVE, VOIDED, ALL], default: ACTIVE } }
+ *       - { in: query, name: categoryId, schema: { type: string } }
+ *       - { in: query, name: paymentMethod, schema: { type: string } }
+ *       - { in: query, name: format, schema: { type: string, enum: [json, csv] } }
+ *     responses:
+ *       200: { description: Expense rows, with the total in `meta` }
+ */
+router.get('/expenses', validate({ query: expenseRegisterQuerySchema }), asyncHandler(reportsController.expenses));
 
 export const reportRoutes = router;

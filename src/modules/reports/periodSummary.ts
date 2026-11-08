@@ -19,6 +19,8 @@ import {
   revenueRecognizedMatch,
   BILL_WRITE_OFF,
 } from '../../common/reporting/billFilters';
+import { dayToBucketLabel, expensesByCategory, expensesByDay } from '../../common/reporting/expenseFilters';
+import { cashAdjustmentsByDay } from '../../common/reporting/cashAdjustmentFilters';
 import type { AuthenticatedUser } from '../../common/types/express';
 import type { ResolvedReportRange } from './reports.service';
 import type {
@@ -65,6 +67,9 @@ function emptyFigures(): BucketFigures {
     writeOffs: 0,
     refunds: 0,
     netRevenue: 0,
+    expenses: 0,
+    cashOverShort: 0,
+    netProfit: 0,
     tax: 0,
     cashAmount: 0,
     cardAmount: 0,
@@ -124,13 +129,18 @@ export async function getPeriodSummary(
   });
   const inRange = { $gte: start, $lte: end };
   const rangeQuery = { from: range.fromDate, to: range.toDate };
+  const [expenseDays, expenseCategories, overShortDays] = await Promise.all([
+    expensesByDay(range.fromDate, range.toDate),
+    expensesByCategory(range.fromDate, range.toDate),
+    cashAdjustmentsByDay(range.fromDate, range.toDate),
+  ]);
 
   const settings = await settingsService.getRaw();
   const minimum = resolveMinimumBillableMinutes(settings);
 
   const [billRows, cancelledRows, sessionRows, voidRows, totals, paymentMethods, cashiers, packages, products, sessions] =
     await Promise.all([
-      BillModel.aggregate<{ _id: string } & Omit<BucketFigures, 'netRevenue' | 'cancelledCount' | 'sessionCount' | 'playMinutes' | 'minimumAppliedCount' | 'voidedCount'>>([
+      BillModel.aggregate<{ _id: string } & Omit<BucketFigures, 'netRevenue' | 'expenses' | 'cashOverShort' | 'netProfit' | 'cancelledCount' | 'sessionCount' | 'playMinutes' | 'minimumAppliedCount' | 'voidedCount'>>([
         { $match: revenueRecognizedMatch(start, end) },
         {
           $group: {
@@ -193,10 +203,13 @@ export async function getPeriodSummary(
   for (const { _id, ...row } of cancelledRows) Object.assign(figuresFor(_id), row);
   for (const { _id, ...row } of sessionRows) Object.assign(figuresFor(_id), row);
   for (const { _id, ...row } of voidRows) Object.assign(figuresFor(_id), row);
+  for (const { day, amount } of expenseDays) figuresFor(dayToBucketLabel(day, groupBy)).expenses += amount;
+  for (const { day, amount } of overShortDays) figuresFor(dayToBucketLabel(day, groupBy)).cashOverShort += amount;
 
   const buckets: PeriodBucket[] = bucketSkeleton(start, end, timezone, groupBy).map((bucket) => {
     const entry = figures.get(bucket.label) ?? emptyFigures();
-    return { ...bucket, ...entry, netRevenue: entry.grossRevenue - entry.discounts - entry.writeOffs - entry.refunds };
+    const netRevenue = entry.grossRevenue - entry.discounts - entry.writeOffs - entry.refunds;
+    return { ...bucket, ...entry, netRevenue, netProfit: netRevenue - entry.expenses + entry.cashOverShort };
   });
 
   const methodAmount = (method: PaymentMethod) =>
@@ -216,6 +229,9 @@ export async function getPeriodSummary(
     writeOffs: totals.writeOffs,
     refunds: totals.refunds,
     netRevenue: totals.netRevenue,
+    expenses: totals.expenses,
+    cashOverShort: totals.cashOverShort,
+    netProfit: totals.netProfit,
     tax: buckets.reduce((sum, bucket) => sum + bucket.tax, 0),
     cashAmount: methodAmount(PaymentMethod.CASH),
     cardAmount: methodAmount(PaymentMethod.CARD),
@@ -249,5 +265,6 @@ export async function getPeriodSummary(
     packages,
     products,
     sessions,
+    expensesByCategory: expenseCategories,
   };
 }

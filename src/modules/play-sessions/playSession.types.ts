@@ -43,6 +43,16 @@ export interface CheckInInput {
   extras?: SessionExtraInput[];
 }
 
+/** Server-side options for `checkIn`, never taken from a request body. */
+export interface CheckInOptions {
+  /**
+   * Skip the `maximumSessionHours` age limit on `checkInAt`. Only the admin manual-bill
+   * path sets it, to back-enter a visit from an earlier day. A future time is still refused.
+   */
+  allowPastCheckIn?: boolean;
+  entrySource?: 'TILL' | 'MANUAL';
+}
+
 export interface VoidSessionInput {
   reason: string;
 }
@@ -110,6 +120,8 @@ export interface PlaySessionPublic {
   /** What `extras` add up to. Not included in the quote, which prices time only. */
   extrasTotal: number;
   /** True once the bill this session was checked out into was marked as a test bill. */
+  /** MANUAL on a ticket back-entered by an admin from a paper record. */
+  entrySource: 'TILL' | 'MANUAL';
   isTestBill: boolean;
   createdAt: Date;
   updatedAt: Date;

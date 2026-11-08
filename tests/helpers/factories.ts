@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { UserModel } from '../../src/modules/users/user.model';
 import { PlayPackageModel } from '../../src/modules/play-packages/playPackage.model';
 import { ProductModel } from '../../src/modules/products/product.model';
+import { ExpenseCategoryModel } from '../../src/modules/expenses/expenseCategory.model';
 import { authService } from '../../src/modules/auth/auth.service';
 import { UserRole } from '../../src/common/constants/roles';
 import { SessionPricingMode, type TieredPricing } from '../../src/common/constants/pricingModes';
@@ -71,6 +72,16 @@ export async function createProduct(overrides: Partial<{
     price: overrides.price ?? 30000,
     isActive: overrides.isActive ?? true,
     description: '',
+    sortOrder: 0,
+    createdBy: null,
+    updatedBy: null,
+  });
+}
+
+export async function createExpenseCategory(overrides: Partial<{ name: string; isActive: boolean }> = {}) {
+  return ExpenseCategoryModel.create({
+    name: overrides.name ?? `Category ${Math.random().toString(36).slice(2, 8)}`,
+    isActive: overrides.isActive ?? true,
     sortOrder: 0,
     createdBy: null,
     updatedBy: null,

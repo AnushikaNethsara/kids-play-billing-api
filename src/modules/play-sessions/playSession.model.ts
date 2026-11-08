@@ -138,6 +138,12 @@ export interface PlaySessionDocument {
   voidedBy: Types.ObjectId | null;
   voidReason: string | null;
 
+  /**
+   * MANUAL on a ticket an admin back-entered from a paper record (see docs/manual-bills.md),
+   * created and checked out in the same request. TILL, or absent, on every other ticket.
+   */
+  entrySource: 'TILL' | 'MANUAL';
+
   /** Products sold onto this visit, billed at checkout. Absent on older sessions. */
   extras: PlaySessionExtraSubdocument[];
 
@@ -233,6 +239,8 @@ const playSessionSchema = new Schema<PlaySessionDocument>(
     voidedAt: { type: Date, default: null },
     voidedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     voidReason: { type: String, default: null },
+
+    entrySource: { type: String, enum: ['TILL', 'MANUAL'], default: 'TILL' },
 
     extras: { type: [playSessionExtraSchema], default: [] },
 

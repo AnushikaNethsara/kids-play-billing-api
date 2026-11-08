@@ -1,5 +1,8 @@
+import { PaymentMethod } from '../../common/constants/paymentMethods';
+import { ExpenseModel, ExpenseStatus, type ExpenseDocument } from '../expenses/expense.model';
+import { CashAdjustmentModel, CashAdjustmentStatus } from '../cash-adjustments/cashAdjustment.model';
 import { Types, type FilterQuery } from 'mongoose';
-import { BillModel, type BillDocument, type BillItemSubdocument } from '../bills/bill.model';
+import { BillEntrySource, BillModel, type BillDocument, type BillItemSubdocument } from '../bills/bill.model';
 import {
   PlaySessionModel,
   resolveChildCount,
@@ -50,7 +53,12 @@ import {
   type ReportRangeQuery,
   type SessionReportQuery,
   type SessionReportRow,
+  ExpenseRegisterQuery,
+  ExpenseRegisterRow,
+  ProfitLossQuery,
+  ProfitLossReport,
 } from './reports.types';
+import { expensesByCategory } from '../../common/reporting/expenseFilters';
 
 /** Longest range any report accepts. A year of bills is ~100k rows - fine to stream, not to preview. */
 const MAX_RANGE_DAYS = 366;
@@ -302,6 +310,35 @@ function percentOf(part: number, whole: number): string {
   return `${(Math.round((part * 1000) / whole) / 10).toFixed(1)}% of subtotal`;
 }
 
+type ExpenseSnapshot = Partial<
+  Record<'spentOn' | 'categoryName' | 'description' | 'vendor' | 'reference' | 'paymentMethod', string> & {
+    amount: number;
+  }
+>;
+
+const EXPENSE_EDIT_FIELDS = [
+  'spentOn',
+  'amount',
+  'categoryName',
+  'description',
+  'vendor',
+  'reference',
+  'paymentMethod',
+] as const;
+
+function expenseReference(expense: ExpenseSnapshot): string {
+  return [expense.categoryName, expense.spentOn].filter(Boolean).join(' ');
+}
+
+type CashAdjustmentSnapshot = Partial<Record<'businessDate' | 'reason' | 'notes', string> & { amount: number }>;
+
+const CASH_ADJUSTMENT_EDIT_FIELDS = ['businessDate', 'amount', 'reason', 'notes'] as const;
+
+function cashAdjustmentReference(adjustment: CashAdjustmentSnapshot): string {
+  const kind = (adjustment.amount ?? 0) < 0 ? 'Shortage' : 'Surplus';
+  return [kind, adjustment.businessDate].filter(Boolean).join(' ');
+}
+
 export const reportsService = {
   resolveReportRange,
 
@@ -311,6 +348,93 @@ export const reportsService = {
   ): Promise<{ range: ResolvedReportRange; report: PeriodSummaryReport }> {
     const range = await resolveReportRange(query);
     return { range, report: await getPeriodSummary(query, range, actor) };
+  },
+
+  async getProfitLoss(
+    query: ProfitLossQuery,
+    actor: AuthenticatedUser,
+  ): Promise<{ range: ResolvedReportRange; report: ProfitLossReport }> {
+    const range = await resolveReportRange(query);
+    const rangeQuery = { from: range.fromDate, to: range.toDate };
+    const [summary, byCategory] = await Promise.all([
+      dashboardService.getSummary(rangeQuery),
+      expensesByCategory(range.fromDate, range.toDate),
+    ]);
+
+    return {
+      range,
+      report: {
+        header: {
+          businessName: range.businessName,
+          timezone: range.timezone,
+          from: range.fromDate,
+          to: range.toDate,
+          generatedAt: new Date(),
+          generatedBy: actor.name,
+        },
+        income: {
+          play: summary.revenueByKind.play,
+          group: summary.revenueByKind.group,
+          product: summary.revenueByKind.product,
+          gross: summary.grossRevenue,
+          discounts: summary.discounts,
+          multiChildDiscounts: summary.multiChildDiscounts,
+          writeOffs: summary.writeOffs,
+          refunds: summary.refunds,
+          netRevenue: summary.netRevenue,
+        },
+        cashOverShort: {
+          net: summary.cashOverShort,
+          surplus: summary.cashSurplus,
+          shortage: summary.cashShortage,
+          count: summary.cashAdjustmentCount,
+        },
+        expenses: { byCategory, total: summary.expenses, count: summary.expenseCount },
+        netProfit: summary.netProfit,
+        profitMarginBasisPoints: summary.profitMarginBasisPoints,
+      },
+    };
+  },
+
+  /** Every expense in range, oldest day first. Capped like the exceptions report. */
+  async getExpenseRegister(
+    query: ExpenseRegisterQuery,
+  ): Promise<{ range: ResolvedReportRange; rows: ExpenseRegisterRow[]; total: number; truncated: boolean }> {
+    const range = await resolveReportRange(query);
+    const match: FilterQuery<ExpenseDocument> = {
+      spentOn: { $gte: range.fromDate, $lte: range.toDate },
+    };
+    if (query.status !== 'ALL') match.status = query.status;
+    if (query.categoryId) match.categoryId = new Types.ObjectId(query.categoryId);
+    if (query.paymentMethod) match.paymentMethod = query.paymentMethod;
+
+    const expenses = await ExpenseModel.find(match)
+      .sort({ spentOn: 1, createdAt: 1 })
+      .limit(EXCEPTIONS_ROW_CAP + 1)
+      .lean();
+    const truncated = expenses.length > EXCEPTIONS_ROW_CAP;
+    const kept = expenses.slice(0, EXCEPTIONS_ROW_CAP);
+    const names = await resolveUserNames(kept.map((expense) => expense.createdBy));
+
+    const rows = kept.map(
+      (expense): ExpenseRegisterRow => ({
+        spentOn: expense.spentOn,
+        categoryName: expense.categoryName,
+        description: expense.description,
+        vendor: expense.vendor,
+        reference: expense.reference,
+        paymentMethod: expense.paymentMethod,
+        amount: expense.amount,
+        status: expense.status,
+        enteredBy: nameOf(names, expense.createdBy),
+        createdAt: expense.createdAt,
+        voidedAt: expense.voidedAt,
+        voidReason: expense.voidReason,
+      }),
+    );
+    // The total of what is listed; voided rows only count when voided rows were asked for.
+    const total = rows.reduce((sum, row) => sum + row.amount, 0);
+    return { range, rows, total, truncated };
   },
 
   async getCustomerReport(
@@ -336,7 +460,26 @@ export const reportsService = {
     ]);
 
     const revenueMatch = revenueRecognizedMatch(start, end);
-    const [firstBill, lastBill, openDrafts, activeSessions, adjustedBills, correctedBills] = await Promise.all([
+    // Active ones are the day's expenses; a voided one is listed only when the void came
+    // after the day ended, since that is a change a reprint has to explain.
+    const dayExpenses = await ExpenseModel.find({
+      spentOn: range.fromDate,
+      $or: [{ status: ExpenseStatus.ACTIVE }, { status: ExpenseStatus.VOIDED, voidedAt: { $gt: end } }],
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+    // Same rule for cash over/short: active ones count, a void after the day ended is shown.
+    const dayCashAdjustments = await CashAdjustmentModel.find({
+      businessDate: range.fromDate,
+      $or: [
+        { status: CashAdjustmentStatus.ACTIVE },
+        { status: CashAdjustmentStatus.VOIDED, voidedAt: { $gt: end } },
+      ],
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+    const [firstBill, lastBill, openDrafts, activeSessions, adjustedBills, correctedBills, lateManualBills] =
+      await Promise.all([
       BillModel.findOne(revenueMatch, { billNumber: 1 }).sort({ paidAt: 1 }).lean(),
       BillModel.findOne(revenueMatch, { billNumber: 1 }).sort({ paidAt: -1 }).lean(),
       BillModel.find({ ...EXCLUDE_TEST_BILLS, status: BillStatus.DRAFT, createdAt: { $gte: start, $lte: end } })
@@ -362,6 +505,15 @@ export const reportsService = {
       // Paid today, corrected by an admin after today ended - the other way a reprint of
       // the day can come out different from the copy printed at closing time.
       BillModel.find({ ...EXCLUDE_TEST_BILLS, paidAt: { $gte: start, $lte: end }, lastEditedAt: { $gt: end } }).lean(),
+      // Dated to today but entered by an admin after today ended - a missed till bill typed
+      // in from the paper book. Its revenue is already in the totals above.
+      BillModel.find({
+        ...EXCLUDE_TEST_BILLS,
+        entrySource: BillEntrySource.MANUAL,
+        status: { $in: [BillStatus.PAID, BillStatus.REFUNDED] },
+        paidAt: { $gte: start, $lte: end },
+        paymentRecordedAt: { $gt: end },
+      }).lean(),
     ]);
 
     const names = await resolveUserNames(adjustedBills.flatMap((bill) => [bill.cancelledBy, bill.refundedBy]));
@@ -396,7 +548,23 @@ export const reportsService = {
             }),
         ),
       )
+      .concat(
+        lateManualBills.map(
+          (bill): DailyCloseAdjustment => ({
+            billId: bill._id.toString(),
+            billNumber: bill.billNumber ?? null,
+            action: 'MANUAL_ENTRY',
+            amount: bill.grandTotal,
+            occurredAt: bill.paymentRecordedAt as Date,
+            actorName: bill.paymentRecordedByName ?? '',
+            reason: bill.manualEntryReason ?? '',
+          }),
+        ),
+      )
       .sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
+
+    const expectedCashInDrawer =
+      (paymentMethods.find((row) => row.paymentMethod === PaymentMethod.CASH)?.amount ?? 0) - summary.cashExpenses;
 
     return {
       header: {
@@ -430,6 +598,36 @@ export const reportsService = {
         cashierName: session.checkInCashierName,
       })),
       adjustments,
+      expenses: {
+        items: dayExpenses.map((expense) => ({
+          id: expense._id.toString(),
+          categoryName: expense.categoryName,
+          description: expense.description,
+          vendor: expense.vendor,
+          paymentMethod: expense.paymentMethod,
+          amount: expense.amount,
+          status: expense.status,
+          changedAfterClose: expense.updatedAt.getTime() > end.getTime(),
+        })),
+        total: summary.expenses,
+        cashTotal: summary.cashExpenses,
+        expectedCashInDrawer,
+      },
+      cashAdjustments: {
+        items: dayCashAdjustments.map((adjustment) => ({
+          id: adjustment._id.toString(),
+          amount: adjustment.amount,
+          reason: adjustment.reason,
+          notes: adjustment.notes ?? '',
+          status: adjustment.status,
+          createdByName: adjustment.createdByName ?? '',
+          createdAt: adjustment.createdAt,
+          changedAfterClose: adjustment.updatedAt.getTime() > end.getTime(),
+        })),
+        net: summary.cashOverShort,
+        expectedCashInDrawer,
+        countedCashInDrawer: expectedCashInDrawer + summary.cashOverShort,
+      },
     };
   },
 
@@ -503,7 +701,20 @@ export const reportsService = {
     const inRange = { $gte: start, $lte: end };
     const none = Promise.resolve([] as never[]);
 
-    const [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected] = await Promise.all([
+    const [
+      discounted,
+      refunded,
+      cancelled,
+      testFlagged,
+      voided,
+      forceClosed,
+      latePaid,
+      corrected,
+      expenseVoids,
+      expenseEdits,
+      cashAdjustmentVoids,
+      cashAdjustmentEdits,
+    ] = await Promise.all([
       wants(ExceptionType.DISCOUNT)
         ? BillModel.find({ ...revenueRecognizedMatch(start, end), discount: { $gt: 0 } })
             .limit(EXCEPTIONS_ROW_CAP)
@@ -539,6 +750,29 @@ export const reportsService = {
         : none,
       wants(ExceptionType.BILL_CORRECTION)
         ? AuditLogModel.find({ action: AuditAction.BILL_CORRECTED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
+      // Voiding or shrinking an expense raises profit after the fact, so both are listed.
+      wants(ExceptionType.EXPENSE_VOID)
+        ? AuditLogModel.find({ action: AuditAction.EXPENSE_VOIDED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
+      wants(ExceptionType.EXPENSE_EDIT)
+        ? AuditLogModel.find({ action: AuditAction.EXPENSE_UPDATED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
+      // Voiding or changing a recorded cash shortage or surplus changes a day's profit after
+      // the fact, the same way an expense change does.
+      wants(ExceptionType.CASH_ADJUSTMENT_VOID)
+        ? AuditLogModel.find({ action: AuditAction.CASH_ADJUSTMENT_VOIDED, createdAt: inRange })
+            .limit(EXCEPTIONS_ROW_CAP)
+            .lean()
+        : none,
+      wants(ExceptionType.CASH_ADJUSTMENT_EDIT)
+        ? AuditLogModel.find({ action: AuditAction.CASH_ADJUSTMENT_UPDATED, createdAt: inRange })
             .limit(EXCEPTIONS_ROW_CAP)
             .lean()
         : none,
@@ -662,10 +896,16 @@ export const reportsService = {
           amount: bill.grandTotal,
           actorName: bill.paymentRecordedByName ?? '',
           cashierName: bill.cashierName,
-          reason: '',
-          detail: bill.paidAt
-            ? `Recorded ${formatGap(bill.paymentRecordedAt!.getTime() - bill.paidAt.getTime())} after checkout`
-            : '',
+          reason: bill.manualEntryReason ?? '',
+          detail: [
+            bill.entrySource === BillEntrySource.MANUAL ? 'Manual entry from a paper record' : '',
+            bill.manualEntryReference ?? '',
+            bill.paidAt
+              ? `Recorded ${formatGap(bill.paymentRecordedAt!.getTime() - bill.paidAt.getTime())} after checkout`
+              : '',
+          ]
+            .filter(Boolean)
+            .join(' - '),
         }),
       ),
       ...corrected.map((log): ExceptionRow => {
@@ -689,9 +929,90 @@ export const reportsService = {
           detail: `Changed ${(metadata.changes ?? []).map((change) => change.field).join(', ')}`,
         };
       }),
+      ...expenseVoids.map((log): ExceptionRow => {
+        const before = (log.before ?? {}) as ExpenseSnapshot;
+        const metadata = (log.metadata ?? {}) as { reason?: string };
+        return {
+          type: ExceptionType.EXPENSE_VOID,
+          occurredAt: log.createdAt,
+          entityType: 'EXPENSE',
+          entityId: log.entityId,
+          reference: expenseReference(before),
+          amount: before.amount ?? null,
+          actorName: log.userName,
+          cashierName: '',
+          reason: metadata.reason ?? '',
+          detail: before.description ?? '',
+        };
+      }),
+      ...expenseEdits.map((log): ExceptionRow => {
+        const before = (log.before ?? {}) as ExpenseSnapshot;
+        const after = (log.after ?? {}) as ExpenseSnapshot;
+        const changed = EXPENSE_EDIT_FIELDS.filter((field) => before[field] !== after[field]);
+        return {
+          type: ExceptionType.EXPENSE_EDIT,
+          occurredAt: log.createdAt,
+          entityType: 'EXPENSE',
+          entityId: log.entityId,
+          reference: expenseReference(after),
+          // The change to the amount: negative when the expense was made smaller.
+          amount: (after.amount ?? 0) - (before.amount ?? 0),
+          actorName: log.userName,
+          cashierName: '',
+          reason: '',
+          detail: changed.length ? `Changed ${changed.join(', ')}` : 'No field changed',
+        };
+      }),
+      ...cashAdjustmentVoids.map((log): ExceptionRow => {
+        const before = (log.before ?? {}) as CashAdjustmentSnapshot;
+        const metadata = (log.metadata ?? {}) as { reason?: string };
+        return {
+          type: ExceptionType.CASH_ADJUSTMENT_VOID,
+          occurredAt: log.createdAt,
+          entityType: 'CASH_ADJUSTMENT',
+          entityId: log.entityId,
+          reference: cashAdjustmentReference(before),
+          amount: before.amount ?? null,
+          actorName: log.userName,
+          cashierName: '',
+          reason: metadata.reason ?? '',
+          detail: before.reason ?? '',
+        };
+      }),
+      ...cashAdjustmentEdits.map((log): ExceptionRow => {
+        const before = (log.before ?? {}) as CashAdjustmentSnapshot;
+        const after = (log.after ?? {}) as CashAdjustmentSnapshot;
+        const changed = CASH_ADJUSTMENT_EDIT_FIELDS.filter((field) => before[field] !== after[field]);
+        return {
+          type: ExceptionType.CASH_ADJUSTMENT_EDIT,
+          occurredAt: log.createdAt,
+          entityType: 'CASH_ADJUSTMENT',
+          entityId: log.entityId,
+          reference: cashAdjustmentReference(after),
+          // The change to the signed amount.
+          amount: (after.amount ?? 0) - (before.amount ?? 0),
+          actorName: log.userName,
+          cashierName: '',
+          reason: '',
+          detail: changed.length ? `Changed ${changed.join(', ')}` : 'No field changed',
+        };
+      }),
     ].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
-    const sources = [discounted, refunded, cancelled, testFlagged, voided, forceClosed, latePaid, corrected];
+    const sources = [
+      discounted,
+      refunded,
+      cancelled,
+      testFlagged,
+      voided,
+      forceClosed,
+      latePaid,
+      corrected,
+      expenseVoids,
+      expenseEdits,
+      cashAdjustmentVoids,
+      cashAdjustmentEdits,
+    ];
     const truncated = rows.length > EXCEPTIONS_ROW_CAP || sources.some((source) => source.length >= EXCEPTIONS_ROW_CAP);
 
     const countsByType = Object.fromEntries(Object.values(ExceptionType).map((type) => [type, 0])) as Record<

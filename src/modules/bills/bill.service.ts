@@ -60,6 +60,7 @@ import type {
   CreatePlayItemInput,
   CreateProductItemInput,
   CreateBillFromSessionsInput,
+  CreateDraftFromSessionsOptions,
   UpdateBillInput,
   CompleteBillInput,
   CancelBillInput,
@@ -168,6 +169,9 @@ export function toPublicBill(bill: BillHydrated): BillPublic {
     paymentRecordedAt: bill.paymentRecordedAt ?? null,
     paymentRecordedBy: bill.paymentRecordedBy ? bill.paymentRecordedBy.toString() : null,
     paymentRecordedByName: bill.paymentRecordedByName ?? null,
+    entrySource: bill.entrySource ?? 'TILL',
+    manualEntryReason: bill.manualEntryReason ?? null,
+    manualEntryReference: bill.manualEntryReference ?? null,
     // Bills predating the flag have no such field, so this normalises to false rather
     // than leaking undefined out through the API.
     isTestBill: bill.isTestBill ?? false,
@@ -522,6 +526,7 @@ export const billService = {
   async createDraftFromSessions(
     input: CreateBillFromSessionsInput,
     actor: AuthenticatedUser,
+    options: CreateDraftFromSessionsOptions = {},
   ): Promise<BillPublic> {
     const ticketCodes = [...new Set(input.ticketCodes)];
     if (ticketCodes.length === 0) {
@@ -669,7 +674,7 @@ export const billService = {
       // An admin supplying an explicit exit time is closing a ticket someone abandoned,
       // not ringing up a customer at the till. That is a bill created without the parent
       // present, so it belongs in the audit trail distinctly from a normal checkout.
-      if (actor.role === UserRole.ADMIN && input.checkOutAt) {
+      if (actor.role === UserRole.ADMIN && input.checkOutAt && !options.manualEntry) {
         await auditLogService.record({
           userId: actor.id,
           userName: actor.name,

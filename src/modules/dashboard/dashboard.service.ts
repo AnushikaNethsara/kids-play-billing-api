@@ -35,6 +35,14 @@ import {
   SESSION_CHILD_COUNT,
   BILL_WRITE_OFF,
 } from '../../common/reporting/billFilters';
+import {
+  dayToBucketLabel,
+  expenseTotals,
+  expensesByDay,
+  profitMarginBasisPoints,
+  toDayRange,
+} from '../../common/reporting/expenseFilters';
+import { cashAdjustmentTotals, cashAdjustmentsByDay } from '../../common/reporting/cashAdjustmentFilters';
 
 async function resolveRange(query: DashboardQuery) {
   const settings = await settingsService.getRaw();
@@ -44,8 +52,13 @@ async function resolveRange(query: DashboardQuery) {
 
 export const dashboardService = {
   async getSummary(query: DashboardQuery): Promise<DashboardSummary> {
-    const { start, end } = await resolveRange(query);
+    const { start, end, timezone } = await resolveRange(query);
     const match = revenueRecognizedMatch(start, end);
+    const { fromDay, toDay } = toDayRange(start, end, timezone);
+    const [expenses, cashAdjustments] = await Promise.all([
+      expenseTotals(fromDay, toDay),
+      cashAdjustmentTotals(fromDay, toDay),
+    ]);
 
     const [totals] = await BillModel.aggregate([
       { $match: match },
@@ -138,6 +151,9 @@ export const dashboardService = {
     const refunds = totals?.refunds ?? 0;
     const paidBillsCount = totals?.paidBillsCount ?? 0;
     const paidGrandTotalSum = totals?.paidGrandTotalSum ?? 0;
+    const netRevenue = grossRevenue - discounts - writeOffs - refunds;
+    // Cash over/short is not revenue, but it is money the business gained or lost.
+    const netProfit = netRevenue - expenses.total + cashAdjustments.net;
 
     return {
       grossRevenue,
@@ -145,7 +161,16 @@ export const dashboardService = {
       multiChildDiscounts: totals?.multiChildDiscounts ?? 0,
       writeOffs,
       refunds,
-      netRevenue: grossRevenue - discounts - writeOffs - refunds,
+      netRevenue,
+      expenses: expenses.total,
+      cashExpenses: expenses.cashAmount,
+      expenseCount: expenses.count,
+      cashOverShort: cashAdjustments.net,
+      cashSurplus: cashAdjustments.surplus,
+      cashShortage: cashAdjustments.shortage,
+      cashAdjustmentCount: cashAdjustments.count,
+      netProfit,
+      profitMarginBasisPoints: profitMarginBasisPoints(netProfit, netRevenue),
       paidBillsCount,
       cancelledBillsCount: cancelledCount?.count ?? 0,
       refundedBillsCount: totals?.refundedBillsCount ?? 0,
@@ -207,21 +232,46 @@ export const dashboardService = {
       { $sort: { _id: 1 } },
     ]);
 
-    return rows.map((row) => {
+    // A day with expenses but no sales still gets a point, so profit goes negative there
+    // instead of the loss vanishing from the chart.
+    const { fromDay, toDay } = toDayRange(start, end, timezone);
+    const expensesByLabel = new Map<string, number>();
+    for (const { day, amount } of await expensesByDay(fromDay, toDay)) {
+      const label = dayToBucketLabel(day, groupBy);
+      expensesByLabel.set(label, (expensesByLabel.get(label) ?? 0) + amount);
+    }
+    const overShortByLabel = new Map<string, number>();
+    for (const { day, amount } of await cashAdjustmentsByDay(fromDay, toDay)) {
+      const label = dayToBucketLabel(day, groupBy);
+      overShortByLabel.set(label, (overShortByLabel.get(label) ?? 0) + amount);
+    }
+    const empty = { grossRevenue: 0, discounts: 0, writeOffs: 0, refunds: 0, billCount: 0, childrenCount: 0 };
+    const byLabel = new Map<string, typeof empty>(rows.map((row) => [row._id as string, row]));
+    for (const label of expensesByLabel.keys()) if (!byLabel.has(label)) byLabel.set(label, empty);
+    for (const label of overShortByLabel.keys()) if (!byLabel.has(label)) byLabel.set(label, empty);
+    const labels = [...byLabel.keys()].sort();
+
+    return labels.map((label) => {
+      const row = byLabel.get(label) ?? empty;
       const netRevenue = row.grossRevenue - row.discounts - row.writeOffs - row.refunds;
+      const expenses = expensesByLabel.get(label) ?? 0;
+      const cashOverShort = overShortByLabel.get(label) ?? 0;
       const base = {
         grossRevenue: row.grossRevenue,
         discounts: row.discounts,
         writeOffs: row.writeOffs,
         refunds: row.refunds,
         netRevenue,
+        expenses,
+        cashOverShort,
+        netProfit: netRevenue - expenses + cashOverShort,
         billCount: row.billCount,
         childrenCount: row.childrenCount,
       };
 
-      if (groupBy === 'day') return { date: row._id, ...base } as DailyRevenuePoint;
-      if (groupBy === 'month') return { month: row._id, ...base } as MonthlyRevenuePoint;
-      return { year: Number(row._id), ...base } as YearlyRevenuePoint;
+      if (groupBy === 'day') return { date: label, ...base } as DailyRevenuePoint;
+      if (groupBy === 'month') return { month: label, ...base } as MonthlyRevenuePoint;
+      return { year: Number(label), ...base } as YearlyRevenuePoint;
     });
   },
 

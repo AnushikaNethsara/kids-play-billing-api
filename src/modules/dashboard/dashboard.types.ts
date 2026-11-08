@@ -29,6 +29,25 @@ export interface DashboardSummary {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the period (cash basis). */
+  expenses: number;
+  /** The part of `expenses` paid in cash, out of the drawer. */
+  cashExpenses: number;
+  expenseCount: number;
+  /**
+   * Net cash over/short found at reconciliation: active cash adjustments dated in the
+   * period. Positive is a surplus, negative a shortage. Not revenue - it goes into profit.
+   */
+  cashOverShort: number;
+  /** Sum of surpluses (>= 0). */
+  cashSurplus: number;
+  /** Sum of shortages (<= 0). */
+  cashShortage: number;
+  cashAdjustmentCount: number;
+  /** `netRevenue - expenses + cashOverShort`. Can be negative. */
+  netProfit: number;
+  /** `netProfit / netRevenue` in basis points (2550 = 25.50%), or null with no revenue. */
+  profitMarginBasisPoints: number | null;
   paidBillsCount: number;
   cancelledBillsCount: number;
   refundedBillsCount: number;
@@ -95,6 +114,12 @@ export interface DailyRevenuePoint {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket. */
+  expenses: number;
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
+  netProfit: number;
   billCount: number;
   childrenCount: number;
 }
@@ -107,6 +132,12 @@ export interface MonthlyRevenuePoint {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket. */
+  expenses: number;
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
+  netProfit: number;
   billCount: number;
   childrenCount: number;
 }
@@ -119,6 +150,12 @@ export interface YearlyRevenuePoint {
   writeOffs: number;
   refunds: number;
   netRevenue: number;
+  /** Active expenses dated in the bucket. */
+  expenses: number;
+  /** Net cash surplus (+) / shortage (-) recorded at reconciliation in the bucket. */
+  cashOverShort: number;
+  /** `netRevenue - expenses + cashOverShort`. */
+  netProfit: number;
   billCount: number;
   childrenCount: number;
 }

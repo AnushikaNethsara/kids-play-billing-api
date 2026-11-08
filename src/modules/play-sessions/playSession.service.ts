@@ -33,6 +33,7 @@ import type {
   AddSessionExtrasInput,
   SessionExtraInput,
   CheckInInput,
+  CheckInOptions,
   CheckInResult,
   ListPlaySessionsQuery,
   PlaySessionPublic,
@@ -98,6 +99,7 @@ export function toPublicSession(session: PlaySessionHydrated): PlaySessionPublic
     })),
     extrasTotal: sumSessionExtras(session),
     isTestBill: session.isTestBill ?? false,
+    entrySource: session.entrySource ?? 'TILL',
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };
@@ -227,7 +229,7 @@ export const playSessionService = {
    * already created back, rather than checking the same child in twice. This is why no
    * Idempotency-Key header is needed here, unlike bill completion.
    */
-  async checkIn(input: CheckInInput, actor: AuthenticatedUser): Promise<CheckInResult> {
+  async checkIn(input: CheckInInput, actor: AuthenticatedUser, options: CheckInOptions = {}): Promise<CheckInResult> {
     const existing = await playSessionRepository.findByTicketCode(input.ticketCode);
     if (existing) {
       // A replay may carry extras added on the device after the first attempt went out.
@@ -252,7 +254,12 @@ export const playSessionService = {
     }
 
     const now = new Date();
-    const checkInAt = this.resolveCheckInAt(input.checkInAt, now, resolveMaximumSessionHours(settings));
+    const checkInAt = this.resolveCheckInAt(
+      input.checkInAt,
+      now,
+      resolveMaximumSessionHours(settings),
+      options.allowPastCheckIn === true,
+    );
     const extras = await snapshotExtras(input.extras ?? [], actor, checkInAt);
 
     const packageRate = snapshotRate(pkg);
@@ -294,6 +301,7 @@ export const playSessionService = {
         checkInCashierId: new Types.ObjectId(actor.id),
         checkInCashierName: actor.name,
         extras,
+        entrySource: options.entrySource ?? 'TILL',
       });
 
       return { session: toPublicSession(session), created: true };
@@ -314,7 +322,12 @@ export const playSessionService = {
    * out of the elapsed calculation - the absolute timestamp matters for the receipt and
    * the audit trail, but it is the difference that bills.
    */
-  resolveCheckInAt(supplied: string | undefined, now: Date, maximumSessionHours: number): Date {
+  resolveCheckInAt(
+    supplied: string | undefined,
+    now: Date,
+    maximumSessionHours: number,
+    allowPast = false,
+  ): Date {
     if (!supplied) return now;
 
     const checkInAt = new Date(supplied);
@@ -328,7 +341,7 @@ export const playSessionService = {
     }
 
     const maximumAgeMs = maximumSessionHours * MINUTES_PER_HOUR * 60_000;
-    if (-skewMs > maximumAgeMs) {
+    if (!allowPast && -skewMs > maximumAgeMs) {
       throw new ValidationError(
         `Check-in time is more than ${maximumSessionHours} hours old and cannot be recorded`,
       );

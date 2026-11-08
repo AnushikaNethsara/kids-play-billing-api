@@ -9,6 +9,18 @@ import { tieredPricingSchema } from '../play-packages/tieredPricing.schema';
 import { PaymentMethod } from '../../common/constants/paymentMethods';
 import { BillItemKind } from '../../common/constants/billItemKind';
 
+/**
+ * Where a bill came from. TILL is every bill rung up live (and every bill from before this
+ * field existed, which carry no such key). MANUAL is a bill an admin typed in later from a
+ * paper record because the till could not take it - see docs/manual-bills.md.
+ */
+export const BillEntrySource = {
+  TILL: 'TILL',
+  MANUAL: 'MANUAL',
+} as const;
+
+export type BillEntrySource = (typeof BillEntrySource)[keyof typeof BillEntrySource];
+
 export interface BillItemSubdocument {
   /**
    * What the line is for - see BillItemKind. Absent on every line written before kinds
@@ -157,6 +169,16 @@ export interface BillDocument {
   paymentRecordedByName: string | null;
 
   /**
+   * MANUAL on a bill back-entered by an admin from a paper record. Such a bill is always
+   * paid dated to its check-out (`paidAt`), so its revenue lands on the day it happened;
+   * `paymentRecordedAt/By` say when and by whom it was really entered. The reason and the
+   * paper reference (a book page, a slip number) are kept on the bill itself.
+   */
+  entrySource: BillEntrySource;
+  manualEntryReason: string | null;
+  manualEntryReference: string | null;
+
+  /**
    * Marks a bill that was rung up to try the system out rather than to take money from a
    * customer - a staff training run, a printer check, a demo. The bill itself is left
    * completely intact (it keeps its bill number, its receipt and its place in the list),
@@ -288,6 +310,10 @@ const billSchema = new Schema<BillDocument>(
     paymentRecordedAt: { type: Date, default: null },
     paymentRecordedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     paymentRecordedByName: { type: String, default: null },
+
+    entrySource: { type: String, enum: Object.values(BillEntrySource), default: BillEntrySource.TILL },
+    manualEntryReason: { type: String, default: null },
+    manualEntryReference: { type: String, default: null },
 
     isTestBill: { type: Boolean, default: false },
     testMarkedAt: { type: Date, default: null },
